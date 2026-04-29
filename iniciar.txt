@@ -1,0 +1,4 @@
+Para abrir o terminal
+CTRL + " 
+e colar no terminal
+python -m streamlit run app.py
