@@ -160,14 +160,17 @@ def preview_raw(
     sheet_name: Optional[str] = None,
     n_rows: int = 20,
     suffix: str = ".xlsx",
+    skip_rows: int = 0,
 ) -> pd.DataFrame:
     if isinstance(file, (str, Path)):
         suffix = Path(file).suffix.lower()
     if suffix == ".csv":
-        df = pd.read_csv(file, header=None, dtype=str, keep_default_na=False, nrows=n_rows)
+        df = pd.read_csv(file, header=None, dtype=str, keep_default_na=False,
+                         skiprows=skip_rows, nrows=n_rows)
     else:
         rs = _real_suffix(file, suffix)
-        df = _read_excel_robust(file, sheet_name=sheet_name or 0, suffix=rs, nrows=n_rows)
+        df = _read_excel_robust(file, sheet_name=sheet_name or 0, suffix=rs,
+                                skiprows=skip_rows if skip_rows > 0 else None, nrows=n_rows)
     df.columns = [f"Col {i}" for i in range(df.shape[1])]
     return df
 

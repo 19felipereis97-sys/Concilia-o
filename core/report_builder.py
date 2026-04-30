@@ -12,6 +12,8 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
+from plan.planilha_contabil import aplicar_depara_contabil
+
 from .normalize import (
     STATUS_CONCILIADO, STATUS_CONCILIADO_MANUAL,
     STATUS_REVISAR, STATUS_REVISAR_COLISAO,
@@ -71,10 +73,11 @@ def build_report(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
     depara: Optional[dict] = None,
+    conta_banco: str = "",
 ) -> bytes:
     """
     Constrói workbook Excel com 6 abas e retorna bytes.
-    depara: dict {classif -> (debito, credito)}
+    depara: dict {classif -> conta_contabil}
     """
     for col in ["_id", "_data", "_valor", "_historico", "_classif", "_status", "_metodo", "_id_bnk"]:
         if col not in df_fin.columns:
@@ -88,7 +91,7 @@ def build_report(
     wb = Workbook()
     wb.remove(wb.active)
 
-    _build_consolidado(wb, df_bnk, df_fin, depara)
+    _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco)
     _build_extrato(wb, df_bnk)
     _build_financeiro(wb, df_fin)
     _build_sem_par_bnk(wb, df_bnk)
@@ -132,13 +135,14 @@ def _resolve_historico_fin(ids_fin_str: str, fin_by_id: dict, sep: str = " - ") 
     return sep.join(hists)
 
 
-def _build_consolidado(wb, df_bnk, df_fin, depara):
+def _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco):
     ws = wb.create_sheet("Relatorio Consolidado")
     headers = [
         "Data", "Historico", "Valor", "Classificacao Financeira",
         "Historico Financeiro",
-        "Tipo Conciliacao", "Debito (Conta)", "Credito (Conta)",
+        "Tipo Conciliacao",
         "ID Banco", "ID Financeiro", "Metodo", "Status",
+        "Debito", "Credito", "Status De x Para",
     ]
     ws.append(headers)
     for cell in ws[1]:
@@ -184,12 +188,13 @@ def _build_consolidado(wb, df_bnk, df_fin, depara):
                     continue
 
                 classif = str(fin_row.get("_classif", "")).strip()
-                debito = credito = ""
-                if classif and not classif.startswith("[MULTIPLAS"):
-                    par = depara.get(classif, ("", ""))
-                    debito, credito = par[0], par[1]
-
                 valor_val = _to_float(fin_row.get("_valor", ""))
+                debito, credito, status_depara = aplicar_depara_contabil(
+                    classif,
+                    valor_val,
+                    depara,
+                    conta_banco,
+                )
                 hist_fin = str(fin_row.get("_historico", "")).strip()
 
                 linha = [
@@ -199,12 +204,13 @@ def _build_consolidado(wb, df_bnk, df_fin, depara):
                     classif,
                     hist_fin,
                     tipo_expand,
-                    debito,
-                    credito,
                     str(row.get("_id", "")),
                     id_f,
                     metodo,
                     status,
+                    debito,
+                    credito,
+                    status_depara,
                 ]
                 ws.append(linha)
                 _apply_date_format(ws)
@@ -212,11 +218,6 @@ def _build_consolidado(wb, df_bnk, df_fin, depara):
                     cell.fill = _fill(cor)
         else:
             classif = _resolve_classif(ids_fin_str, fin_by_id)
-            debito = credito = ""
-            if classif and not classif.startswith("[MULTIPLAS"):
-                par = depara.get(classif, ("", ""))
-                debito, credito = par[0], par[1]
-
             tipo = ""
             if "1:1" in metodo:
                 tipo = "Exato"
@@ -229,6 +230,12 @@ def _build_consolidado(wb, df_bnk, df_fin, depara):
 
             hist_fin = _resolve_historico_fin(ids_fin_str, fin_by_id)
             valor_val = _to_float(row.get("_valor", ""))
+            debito, credito, status_depara = aplicar_depara_contabil(
+                classif,
+                valor_val,
+                depara,
+                conta_banco,
+            )
 
             linha = [
                 data_val,
@@ -237,12 +244,13 @@ def _build_consolidado(wb, df_bnk, df_fin, depara):
                 classif,
                 hist_fin,
                 tipo,
-                debito,
-                credito,
                 str(row.get("_id", "")),
                 ids_fin_str,
                 metodo,
                 status,
+                debito,
+                credito,
+                status_depara,
             ]
             ws.append(linha)
             _apply_date_format(ws)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import List
 
+import pandas as pd
 import streamlit as st
 
 from core.manual_review import ReviewCard
@@ -14,6 +15,12 @@ _PROB_LABEL = {
     "alta":  "◆ Alta",
     "media": "◇ Média",
     "baixa": "○ Baixa",
+}
+
+_STATUS_ICON = {
+    "conciliar": "✅",
+    "ignorar":   "🚫",
+    "":          "⏳",
 }
 
 
@@ -29,17 +36,51 @@ def _render_cand_checkbox(card: ReviewCard, cand: dict, selecionados: list) -> N
 
 
 def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
-    st.subheader("Etapa 8 — Revisão Manual")
+    st.subheader("Revisão Manual")
 
     if not cards:
         st.success("Nenhuma linha requer revisão manual!")
         return cards
 
-    st.info(f"Existem **{len(cards)}** linhas que necessitam de revisão manual.")
+    # ── 2. Barra de progresso ─────────────────────────────────────────────────
+    n_total     = len(cards)
+    n_decididos = sum(1 for c in cards if c.decisao)
+    pct = n_decididos / n_total
+    st.progress(pct, text=f"{n_decididos} de {n_total} revisados")
 
-    for i, card in enumerate(cards):
-        label = f"#{i+1} | {fmt_data(card.data)} | {fmt_valor(card.valor)} | {card.historico[:60]}"
-        with st.expander(label, expanded=(i == 0)):
+    # ── 5. Filtro global de cards ─────────────────────────────────────────────
+    filtro_global = st.text_input(
+        "Filtrar lançamentos:",
+        key="review_filtro_global",
+        placeholder="Data, valor ou histórico…",
+        label_visibility="collapsed",
+    )
+
+    cards_visiveis = cards
+    if filtro_global.strip():
+        term = filtro_global.strip().lower()
+        cards_visiveis = [
+            c for c in cards
+            if term in c.historico.lower()
+            or term in fmt_data(c.data).lower()
+            or term in fmt_valor(c.valor).lower()
+            or term in c.id_bnk.lower()
+        ]
+        n_ocultos = len(cards) - len(cards_visiveis)
+        if n_ocultos:
+            st.caption(f"_{n_ocultos} lançamento(s) oculto(s) pelo filtro_")
+
+    # Primeiro card ainda sem decisão abre automaticamente
+    primeiro_pendente = next((i for i, c in enumerate(cards_visiveis) if not c.decisao), None)
+
+    # ── Cards ─────────────────────────────────────────────────────────────────
+    for i, card in enumerate(cards_visiveis):
+
+        # ── 1. Ícone de status no título do expander ──────────────────────────
+        icon  = _STATUS_ICON.get(card.decisao, "⏳")
+        label = f"{icon} #{i+1} | {fmt_data(card.data)} | {fmt_valor(card.valor)} | {card.historico[:60]}"
+
+        with st.expander(label, expanded=(i == primeiro_pendente)):
             col_bnk, col_fin = st.columns([1, 2])
 
             with col_bnk:
@@ -54,6 +95,36 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
                 if card.candidatos:
                     st.markdown("**Candidatos Financeiros**")
 
+                    # ── 3. Navegação de combinações válidas ───────────────────
+                    if card.combinacoes:
+                        n_combos  = len(card.combinacoes)
+                        combo_key = f"combo_idx_{card.id_bnk}"
+                        if combo_key not in st.session_state:
+                            st.session_state[combo_key] = 0
+                        idx = min(st.session_state[combo_key], n_combos - 1)
+
+                        nav1, nav2, nav3, nav4 = st.columns([1, 1, 3, 3])
+                        with nav1:
+                            if st.button("◀", key=f"btn_prev_{card.id_bnk}", disabled=(idx == 0)):
+                                for c in card.candidatos:
+                                    st.session_state[f"chk_{card.id_bnk}_{c['id']}"] = False
+                                st.session_state[combo_key] = idx - 1
+                                st.rerun()
+                        with nav2:
+                            if st.button("▶", key=f"btn_next_{card.id_bnk}", disabled=(idx >= n_combos - 1)):
+                                for c in card.candidatos:
+                                    st.session_state[f"chk_{card.id_bnk}_{c['id']}"] = False
+                                st.session_state[combo_key] = idx + 1
+                                st.rerun()
+                        with nav3:
+                            st.markdown(f"**Combinação {idx + 1} / {n_combos}**")
+                        with nav4:
+                            if st.button("⚡ Selecionar combinação", key=f"btn_sel_combo_{card.id_bnk}"):
+                                combo_atual = set(card.combinacoes[idx])
+                                for c in card.candidatos:
+                                    st.session_state[f"chk_{card.id_bnk}_{c['id']}"] = c["id"] in combo_atual
+                                st.rerun()
+
                     filtro = st.text_input(
                         "Filtrar candidatos:",
                         key=f"filter_{card.id_bnk}",
@@ -61,7 +132,6 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
                         label_visibility="collapsed",
                     )
 
-                    # Candidatos previamente selecionados sempre visíveis
                     pinned = set(card.selecao_pre)
 
                     def _matches(c: dict) -> bool:
@@ -80,21 +150,21 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
                     if filtro and n_ocultos:
                         st.caption(f"_{n_ocultos} candidato(s) oculto(s) pelo filtro_")
 
-                    prováveis = [c for c in visiveis if c.get("probabilidade") in ("alta", "media")]
+                    provaveis = [c for c in visiveis if c.get("probabilidade") in ("alta", "media")]
                     outros    = [c for c in visiveis if c.get("probabilidade") == "baixa"]
 
                     selecionados: list = []
 
-                    if prováveis:
-                        n_alta  = sum(1 for c in prováveis if c.get("probabilidade") == "alta")
-                        n_media = sum(1 for c in prováveis if c.get("probabilidade") == "media")
+                    if provaveis:
+                        n_alta  = sum(1 for c in provaveis if c.get("probabilidade") == "alta")
+                        n_media = sum(1 for c in provaveis if c.get("probabilidade") == "media")
                         partes  = []
                         if n_alta:
                             partes.append(f"{n_alta} alta{'s' if n_alta > 1 else ''}")
                         if n_media:
                             partes.append(f"{n_media} média{'s' if n_media > 1 else ''}")
                         st.caption(f"Mais prováveis — {', '.join(partes)}")
-                        for cand in prováveis:
+                        for cand in provaveis:
                             _render_cand_checkbox(card, cand, selecionados)
 
                     if outros:
@@ -104,13 +174,12 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
 
                     card.selecao_pre = selecionados
 
-                    # Live subtotal
                     soma = sum(c["valor"] for c in card.candidatos if c["id"] in selecionados)
                     diff = soma - card.valor
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Selecionado", fmt_valor(soma))
-                    m2.metric("Bancário", fmt_valor(card.valor))
-                    m3.metric("Diferença", fmt_valor(diff))
+                    m2.metric("Bancário",    fmt_valor(card.valor))
+                    m3.metric("Diferença",   fmt_valor(diff))
 
                     if selecionados:
                         if abs(diff) > Decimal("0.01"):
@@ -143,5 +212,23 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
                     horizontal=True,
                 )
                 card.decisao = "ignorar" if decisao == "Ignorar linha" else ""
+
+    # ── 4. Resumo global ──────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("**Resumo das decisões**")
+
+    n_conciliar = sum(1 for c in cards if c.decisao == "conciliar")
+    n_ignorar   = sum(1 for c in cards if c.decisao == "ignorar")
+    n_pendente  = sum(1 for c in cards if not c.decisao)
+    v_conciliar = sum((c.valor for c in cards if c.decisao == "conciliar"), Decimal("0"))
+    v_ignorar   = sum((c.valor for c in cards if c.decisao == "ignorar"),   Decimal("0"))
+    v_pendente  = sum((c.valor for c in cards if not c.decisao),            Decimal("0"))
+
+    resumo_df = pd.DataFrame({
+        "Decisão":     ["✅ Conciliar", "🚫 Ignorar", "⏳ Pendente"],
+        "Qtd":         [n_conciliar,    n_ignorar,    n_pendente],
+        "Valor Total": [fmt_valor(v_conciliar), fmt_valor(v_ignorar), fmt_valor(v_pendente)],
+    })
+    st.dataframe(resumo_df, use_container_width=True, hide_index=True)
 
     return cards

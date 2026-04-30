@@ -1,39 +1,100 @@
 """
-Exportação e aplicação do De-Para contábil.
+Exportacao e utilitarios do De-Para contabil.
 """
 from __future__ import annotations
+
 import csv
 import io
-from typing import List, Dict
+from decimal import Decimal
+from typing import Any, Dict, List
 
-import pandas as pd
+
+CONTA_SEM_DEPARA = "4427"
+STATUS_DEPARA_OK = "De x Para efetuado corretamente"
+STATUS_SEM_CLASSIFICACAO = "Não possui classificação financeira"
+STATUS_NAO_PARAMETRIZADA = "Classificação financeira não parametrizada"
 
 
 def export_depara_csv(depara_rows: List[dict]) -> bytes:
     """
-    Exporta lista de dicts {classif, debito, credito} como CSV bytes.
+    Exporta lista de dicts {classif, conta_contabil} como CSV bytes.
     """
     buf = io.StringIO()
-    writer = csv.DictWriter(buf, fieldnames=["classif", "debito", "credito"])
+    writer = csv.DictWriter(buf, fieldnames=["classif", "conta_contabil"])
     writer.writeheader()
     for row in depara_rows:
-        writer.writerow(row)
+        writer.writerow({
+            "classif": row.get("classif", ""),
+            "conta_contabil": row.get("conta_contabil", ""),
+        })
     return buf.getvalue().encode("utf-8")
 
 
-def apply_depara(df_fin: pd.DataFrame, depara_rows: List[dict]) -> pd.DataFrame:
+def get_depara_dict(depara_rows: List[dict]) -> Dict[str, str]:
     """
-    Adiciona colunas _conta_debito e _conta_credito ao df_fin baseado no De-Para.
+    Converte lista de De-Para para dict {classif: conta_contabil}.
     """
-    mapping = {r["classif"]: (r["debito"], r["credito"]) for r in depara_rows}
-    df = df_fin.copy()
-    df["_conta_debito"] = df["_classif"].map(lambda c: mapping.get(c, ("", ""))[0])
-    df["_conta_credito"] = df["_classif"].map(lambda c: mapping.get(c, ("", ""))[1])
-    return df
+    return {
+        str(r["classif"]).strip(): str(r.get("conta_contabil", "")).strip()
+        for r in depara_rows
+        if str(r.get("classif", "")).strip()
+    }
 
 
-def get_depara_dict(depara_rows: List[dict]) -> dict:
+def _normaliza_classificacao(valor: Any) -> str:
+    return str(valor or "").strip()
+
+
+def _index_depara(depara: Dict[str, Any]) -> Dict[str, str]:
     """
-    Converte lista de De-Para para dict {classif: (debito, credito)}.
+    Cria indice case-insensitive sem alterar a classificacao exibida no relatorio.
+    Tambem aceita o formato antigo {classif: (debito, credito)} para manter
+    compatibilidade durante a migracao.
     """
-    return {r["classif"]: (r["debito"], r["credito"]) for r in depara_rows}
+    index: Dict[str, str] = {}
+    for classif, conta in (depara or {}).items():
+        key = _normaliza_classificacao(classif).casefold()
+        if not key:
+            continue
+        if isinstance(conta, (tuple, list)):
+            conta_val = conta[0] if conta else ""
+        else:
+            conta_val = conta
+        index[key] = str(conta_val or "").strip()
+    return index
+
+
+def resolver_conta_depara(classificacao: Any, depara: Dict[str, Any]) -> tuple[str, str]:
+    """
+    Resolve a conta contabil pela classificacao financeira.
+    Retorna (conta, status). Quando nao houver classificacao ou parametrizacao,
+    aplica a conta padrao 4427 conforme regra do De x Para.
+    """
+    classif = _normaliza_classificacao(classificacao)
+    if not classif:
+        return CONTA_SEM_DEPARA, STATUS_SEM_CLASSIFICACAO
+
+    conta = _index_depara(depara).get(classif.casefold(), "")
+    if conta:
+        return conta, STATUS_DEPARA_OK
+    return CONTA_SEM_DEPARA, STATUS_NAO_PARAMETRIZADA
+
+
+def aplicar_depara_contabil(
+    classificacao: Any,
+    valor: Any,
+    depara: Dict[str, Any],
+    conta_banco: str,
+) -> tuple[str, str, str]:
+    """
+    Aplica a regra contabil do De x Para e retorna (debito, credito, status).
+    Valor positivo: banco no debito e conta De x Para no credito.
+    Valor negativo: conta De x Para no debito e banco no credito.
+    """
+    conta_depara, status = resolver_conta_depara(classificacao, depara)
+    valor_num = float(valor) if isinstance(valor, Decimal) else float(valor or 0)
+    conta_banco = str(conta_banco or "").strip()
+
+    if valor_num >= 0:
+        return conta_banco, conta_depara, status
+    return conta_depara, conta_banco, status

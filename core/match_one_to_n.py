@@ -41,7 +41,6 @@ def match_one_to_n(
     - Combinatória delegada a combo_search.
     """
     tol = float(params.value_tolerance_cents) / 100
-    cap = params.effective_max_candidates()
     use_deadline = params.combo_timeout_sec > 0
 
     fin_pos = dict(zip(df_fin["_id"], df_fin.index))
@@ -76,9 +75,6 @@ def match_one_to_n(
         # Pre-check: impossível atingir o alvo mesmo somando todos os candidatos
         if sum(abs(c["_valor_f"]) for c in candidatos) < abs_target - tol:
             continue
-
-        if len(candidatos) > cap:
-            candidatos = candidatos[:cap]
 
         vals = [c["_valor_f"] for c in candidatos]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None

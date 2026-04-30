@@ -7,7 +7,7 @@ import datetime
 import streamlit as st
 import pandas as pd
 
-from core.io_excel import get_sheet_names, preview_raw, get_columns
+from core.io_excel import get_sheet_names, preview_raw
 
 
 def _to_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -166,8 +166,8 @@ def step_header_config_extrato():
 
     file_obj.seek(0)
     try:
-        preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, suffix=suffix, n_rows=8)
-        st.write("**Pré-visualização (primeiras 8 linhas brutas):**")
+        preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, skip_rows=int(skip), suffix=suffix, n_rows=8)
+        st.write(f"**Pré-visualização — dados após ignorar {int(skip)} linha(s):**")
         st.dataframe(_to_display(preview), width='stretch')
     except Exception as e:
         st.error(f"Erro ao ler preview: {e}")
@@ -217,8 +217,8 @@ def _config_fin_single(
 
     file_obj.seek(0)
     try:
-        preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, suffix=suffix, n_rows=8)
-        title = f"**Pré-visualização — {label}:**" if label else "**Pré-visualização:**"
+        preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, skip_rows=int(skip), suffix=suffix, n_rows=8)
+        title = f"**Pré-visualização — {label} (após ignorar {int(skip)} linha(s)):**" if label else f"**Pré-visualização — dados após ignorar {int(skip)} linha(s):**"
         st.write(title)
         st.dataframe(_to_display(preview), width='stretch')
     except Exception as e:
@@ -290,8 +290,8 @@ def step_header_config_financeiro():
 
         file_obj.seek(0)
         try:
-            preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, suffix=suffix, n_rows=8)
-            st.write("**Pré-visualização:**")
+            preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, skip_rows=int(skip), suffix=suffix, n_rows=8)
+            st.write(f"**Pré-visualização — dados após ignorar {int(skip)} linha(s):**")
             st.dataframe(_to_display(preview), width='stretch')
         except Exception as e:
             st.error(f"Erro ao ler preview: {e}")

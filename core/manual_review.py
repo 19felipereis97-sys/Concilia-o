@@ -15,7 +15,7 @@ from .normalize import (
     STATUS_IGNORADO_SEM_PAR, STATUS_SEM_PAREAMENTO,
 )
 from .params import ConciliacaoParams
-from .combo_search import find_valid_indices
+from .combo_search import find_valid_indices, find_all_combos
 
 
 @dataclass
@@ -25,6 +25,7 @@ class ReviewCard:
     valor: Decimal
     historico: str
     candidatos: List[dict] = field(default_factory=list)
+    combinacoes: List[List[str]] = field(default_factory=list)  # grupos válidos de IDs financeiros
     selecao_pre: List[str] = field(default_factory=list)
     decisao: str = ""  # "conciliar", "ignorar", ""
 
@@ -137,12 +138,18 @@ def build_review_queue(
             abs(float(x["valor"]) - float(rec_b["_valor"])),
         ))
 
+        # Todas as combinações válidas de candidatos que somam ao valor bancário
+        vals_f = [float(c["valor"]) for c in candidatos]
+        combos_idx = find_all_combos(vals_f, float(rec_b["_valor"]), tol, params.max_group_size)
+        combinacoes = [[candidatos[i]["id"] for i in combo] for combo in combos_idx]
+
         cards.append(ReviewCard(
             id_bnk=rec_b["_id"],
             data=rec_b["_data"],
             valor=rec_b["_valor"],
             historico=rec_b["_historico"],
             candidatos=candidatos,
+            combinacoes=combinacoes,
         ))
 
     return cards

@@ -11,9 +11,9 @@ from typing import List
 class ConciliacaoParams:
     date_offsets: List[int] = field(default_factory=lambda: [0, 1, -1, 2, -2])
     max_group_size: int = 5
-    # Teto de candidatos por grupo. effective_max_candidates() aplica um cap
-    # adaptativo abaixo deste valor quando max_group_size é grande, mantendo
-    # C(cap, max_group_size) <= 400.000 para limitar o pior caso combinatorial.
+    # Teto de candidatos por grupo usado diretamente nos passes N:1 e 1:N.
+    # find_combos usa MITM quando C(n,k) > 10.000, mantendo custo O(2^(n/2))
+    # independente de max_group_size, então o cap não precisa ser adaptativo.
     max_candidates_per_group: int = 30
     value_tolerance_cents: int = 0
     # Timeout em segundos por chamada find_combos (0 = desabilitado).

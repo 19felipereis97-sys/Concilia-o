@@ -200,13 +200,6 @@ def step_params() -> ConciliacaoParams:
             min_value=2, max_value=15, value=5, key="param_group",
             help="Máximo de lançamentos que podem se combinar num único pareamento.",
         )
-        max_cand = st.number_input(
-            "Candidatos máximos por grupo",
-            min_value=5, max_value=50, value=30, key="param_max_cand",
-            help="Limita o pool combinatório por data/sinal. Mantenha ≤ 30 ao usar grupos grandes (≥ 10).",
-        )
-        if int(max_group) >= 10 and int(max_cand) > 30:
-            st.warning("Grupo ≥ 10 com candidatos > 30 pode tornar a conciliação lenta em planilhas grandes.")
         offsets_str = st.text_input(
             "Offsets de data (vírgula, ex: 0,1,-1,2,-2)",
             value="0,1,-1,2,-2",
@@ -237,7 +230,6 @@ def step_params() -> ConciliacaoParams:
     params = ConciliacaoParams(
         date_offsets=offsets,
         max_group_size=int(max_group),
-        max_candidates_per_group=int(max_cand),
         value_tolerance_cents=int(tol),
         discard_patterns=patterns,
         hist_separator=hist_sep or " - ",
