@@ -95,6 +95,7 @@ def build_report(
     wb = Workbook()
     wb.remove(wb.active)
 
+    _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco)
     _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco)
     _build_extrato(wb, df_bnk)
     _build_financeiro(wb, df_fin)
@@ -137,6 +138,82 @@ def _resolve_historico_fin(ids_fin_str: str, fin_by_id: dict, sep: str = " - ") 
             if h and h not in hists:
                 hists.append(h)
     return sep.join(hists)
+
+
+def _concat_hist(hist_banco: str, hist_fin: str, sep: str = " - ") -> str:
+    parts = [h for h in (hist_banco.strip(), hist_fin.strip()) if h]
+    return sep.join(parts)
+
+
+def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco):
+    ws = wb.create_sheet("Importação Alterdata")
+    headers = ["Histórico", "Nota Fiscal", "Data", "Nat. Cod", "Nat. Desc.", "Valor", "Débito", "Crédito"]
+    ws.append(headers)
+    for cell in ws[1]:
+        cell.fill = _fill(COR_CABECALHO)
+        cell.font = _header_font()
+        cell.alignment = Alignment(horizontal="center")
+
+    fin_by_id: dict = {
+        rec["_id"]: rec
+        for rec in df_fin[["_id", "_valor", "_historico", "_classif"]].to_dict("records")
+    }
+
+    for row in df_bnk.to_dict("records"):
+        metodo = str(row.get("_metodo", ""))
+        ids_fin_str = str(row.get("_ids_fin", ""))
+        data_val = _as_date(row.get("_data", ""))
+        hist_banco = str(row.get("_historico", "")).strip()
+
+        is_expandable = (
+            (("1:N D soma" in metodo or "1:N Dvar soma" in metodo or "parcial soma" in metodo)
+             and "ambiguo" not in metodo)
+            or metodo == "manual"
+        ) and bool(ids_fin_str.strip())
+
+        if is_expandable:
+            ids_fin = [x.strip() for x in ids_fin_str.split(";") if x.strip()]
+            for id_f in ids_fin:
+                fin_row = fin_by_id.get(id_f)
+                if fin_row is None:
+                    continue
+                classif = str(fin_row.get("_classif", "")).strip()
+                valor_val = _to_float(fin_row.get("_valor", ""))
+                debito, credito, _ = aplicar_depara_contabil_indexed(
+                    classif, valor_val, depara_index, conta_banco,
+                )
+                hist_fin = str(fin_row.get("_historico", "")).strip()
+                ws.append([
+                    _concat_hist(hist_banco, hist_fin),
+                    None,
+                    data_val,
+                    None,
+                    None,
+                    valor_val,
+                    debito,
+                    credito,
+                ])
+                _apply_date_format(ws)
+        else:
+            classif = _resolve_classif(ids_fin_str, fin_by_id)
+            valor_val = _to_float(row.get("_valor", ""))
+            debito, credito, _ = aplicar_depara_contabil_indexed(
+                classif, valor_val, depara_index, conta_banco,
+            )
+            hist_fin = _resolve_historico_fin(ids_fin_str, fin_by_id)
+            ws.append([
+                _concat_hist(hist_banco, hist_fin),
+                None,
+                data_val,
+                None,
+                None,
+                valor_val,
+                debito,
+                credito,
+            ])
+            _apply_date_format(ws)
+
+    _auto_width(ws)
 
 
 def _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco):
