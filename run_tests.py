@@ -22,6 +22,9 @@ from tests.test_conciliacao import (
     test_t10_parse_date_formatos,
     test_t11_relatorio_vazio,
     test_t12_dois_colunas_debito_credito,
+    test_t18_depara_indexado_equivale_ao_fluxo_original,
+    test_t19_csv_latin1_e_lido_com_fallback,
+    test_t20_header_duplicado_bloqueia_importacao,
 )
 
 SUITE = [
@@ -37,6 +40,9 @@ SUITE = [
     ("T10 - Parse date formatos",          test_t10_parse_date_formatos),
     ("T11 - Relatorio vazio",              test_t11_relatorio_vazio),
     ("T12 - Duas colunas debito credito",  test_t12_dois_colunas_debito_credito),
+    ("T18 - De x Para indexado equivalente", test_t18_depara_indexado_equivale_ao_fluxo_original),
+    ("T19 - CSV latin1 com fallback",       test_t19_csv_latin1_e_lido_com_fallback),
+    ("T20 - Header duplicado bloqueado",    test_t20_header_duplicado_bloqueia_importacao),
 ]
 
 

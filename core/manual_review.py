@@ -3,6 +3,7 @@ Fila de revisão manual para linhas ambíguas ou sem pareamento.
 """
 from __future__ import annotations
 import datetime
+from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import List
@@ -16,6 +17,7 @@ from .normalize import (
 )
 from .params import ConciliacaoParams
 from .combo_search import find_valid_indices, find_all_combos
+from .candidate_selection import limit_subset_candidates
 
 
 @dataclass
@@ -76,16 +78,18 @@ def build_review_queue(
 
     Classificação de probabilidade:
       Alta  — valor idêntico ao extrato (candidato 1:1 perfeito).
-      Média — valor menor (candidato combinatório N:1 ou 1:N).
+      Média — valor menor (candidato combinatório 1:N).
 
     Ordem: Alta → Média, desempate por diferença de valor.
     """
     tol = float(params.value_tolerance_cents) / 100
 
-    fin_free = df_fin.loc[
+    fin_free_by_key: dict = defaultdict(list)
+    for rec in df_fin.loc[
         df_fin["_status"] == STATUS_IGNORADO_SEM_PAR,
         ["_id", "_data", "_valor", "_historico", "_classif"],
-    ].to_dict("records")
+    ].to_dict("records"):
+        fin_free_by_key[(rec["_data"], rec["_valor"] > 0)].append(rec)
 
     cards = []
     revisar_mask = df_bnk["_status"].isin([STATUS_REVISAR, STATUS_REVISAR_COLISAO])
@@ -96,15 +100,7 @@ def build_review_queue(
         abs_bnk = abs(float(rec_b["_valor"]))
         candidatos = []
 
-        for rec_f in fin_free:
-            # Regra 1: mesmo sinal
-            if (rec_f["_valor"] > 0) != bnk_sign:
-                continue
-
-            # Regra 2: mesmo dia (D0 apenas)
-            if rec_f["_data"] != rec_b["_data"]:
-                continue
-
+        for rec_f in fin_free_by_key.get((rec_b["_data"], bnk_sign), []):
             # Regra 3: valor absoluto não pode superar o alvo
             abs_fin = abs(float(rec_f["_valor"]))
             if abs_fin > abs_bnk + tol:
@@ -121,7 +117,14 @@ def build_review_queue(
                 "probabilidade": "alta" if value_exact else "media",
             })
 
+        limited = False
         if candidatos:
+            candidatos, limited = limit_subset_candidates(
+                candidatos,
+                float(rec_b["_valor"]),
+                int(getattr(params, "max_candidates_per_group", 0) or 0),
+                value_key="valor",
+            )
             candidatos = _filter_to_valid_combos(
                 candidatos, float(rec_b["_valor"]), tol, params.max_group_size
             )
@@ -140,7 +143,7 @@ def build_review_queue(
 
         # Todas as combinações válidas de candidatos que somam ao valor bancário
         vals_f = [float(c["valor"]) for c in candidatos]
-        combos_idx = find_all_combos(vals_f, float(rec_b["_valor"]), tol, params.max_group_size)
+        combos_idx = [] if limited else find_all_combos(vals_f, float(rec_b["_valor"]), tol, params.max_group_size)
         combinacoes = [[candidatos[i]["id"] for i in combo] for combo in combos_idx]
 
         cards.append(ReviewCard(

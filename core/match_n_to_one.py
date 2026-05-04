@@ -19,6 +19,7 @@ from .normalize import (
 )
 from .params import ConciliacaoParams
 from .combo_search import find_combos
+from .candidate_selection import limit_subset_candidates
 
 
 def match_n_to_one(
@@ -35,9 +36,8 @@ def match_n_to_one(
     - Dica 6: usa _valor_f (float pré-computado) sem chamar float() por linha.
     - Pre-agrupa candidatos bancários por (data, sinal) — O(n) vs O(n²).
     - Conjunto free_bnk atualizado incrementalmente com .discard().
-    - Cap adaptativo via params.effective_max_candidates() (limita C(n,k)).
     - Pre-check de impossibilidade: pula grupo se soma total < alvo.
-    - Deadline por grupo: interrompe find_combos se demorar demais.
+    - Deadline por grupo: interrompe find_combos se demorar demais (MITM O(2^(n/2))).
     - Combinatória delegada a combo_search.
     """
     tol = float(params.value_tolerance_cents) / 100
@@ -68,7 +68,6 @@ def match_n_to_one(
             c for c in bnk_groups.get((row_f["_data"], sign), [])
             if c["_id"] in free_bnk and abs(c["_valor_f"]) <= abs_target + tol
         ]
-
         if len(candidatos) < 2:
             continue
 
@@ -76,7 +75,15 @@ def match_n_to_one(
         if sum(abs(c["_valor_f"]) for c in candidatos) < abs_target - tol:
             continue
 
-        vals = [c["_valor_f"] for c in candidatos]
+        candidatos_busca, limited = limit_subset_candidates(
+            candidatos,
+            target_f,
+            int(getattr(params, "max_candidates_per_group", 0) or 0),
+        )
+        if len(candidatos_busca) < 2:
+            continue
+
+        vals = [c["_valor_f"] for c in candidatos_busca]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None
         matches = find_combos(vals, target_f, tol, params.max_group_size, deadline=deadline)
 
@@ -84,7 +91,7 @@ def match_n_to_one(
             continue
 
         if len(matches) == 1:
-            combo_rows = [candidatos[i] for i in matches[0]]
+            combo_rows = [candidatos_busca[i] for i in matches[0]]
             ids_bnk = [r["_id"] for r in combo_rows]
             metodo = f"N:1 soma={len(ids_bnk)}"
 
@@ -102,13 +109,13 @@ def match_n_to_one(
             seen = set()
             for combo_idx in matches:
                 for i in combo_idx:
-                    rid = candidatos[i]["_id"]
+                    rid = candidatos_busca[i]["_id"]
                     if rid in seen:
                         continue
                     seen.add(rid)
                     bi = bnk_pos[rid]
                     if df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
                         df_bnk.at[bi, "_status"] = STATUS_REVISAR
-                        df_bnk.at[bi, "_metodo"] = "N:1 ambiguo"
+                        df_bnk.at[bi, "_metodo"] = "N:1 grupo limitado" if limited else "N:1 ambiguo"
 
     return df_bnk, df_fin

@@ -1,14 +1,18 @@
 """
-Conciliação 1:1 com cascata de datas.
-Regra: para cada linha do extrato bancário, busca uma linha financeira com
-       mesmo valor (sinal incluso) priorizando o mesmo dia (D).
-       Somente se nenhum candidato for encontrado no dia exato, expande para
-       D-1, D+1, D-2 e D+2 (para na primeira janela que tiver candidatos).
+Conciliação 1:1 com suporte a janela de datas configurável.
+
+O chamador decide quais offsets tentar:
+  - offsets=[0]          → somente D0 (Passo 1 do motor)
+  - offsets=[-1,1,-2,2]  → variação de datas em cascata (Passo 3 do motor)
+
+Comportamento de cascata: para cada linha bancária, itera os offsets em ordem
+e para no primeiro que produzir algum candidato financeiro. Assim, D-1 é
+preferido a D+1, que é preferido a D-2, etc.
 """
 from __future__ import annotations
 import datetime
 from collections import defaultdict
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -20,18 +24,19 @@ def match_one_to_one(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
+    offsets: Optional[List[int]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[Tuple]]:
     """
     Retorna (df_bnk, df_fin, pending_pairs).
-    pending_pairs: lista de (id_bnk, id_fin, offset_k) para resolucao de colisoes.
+    pending_pairs: lista de (id_bnk, id_fin, offset_k) para resolução de colisões.
 
-    Cascata de offsets: para cada linha bancária, itera params.date_offsets
-    em ordem (inicia em 0 = mesmo dia) e para no primeiro offset que produzir
-    algum candidato. Assim, D±1 e D±2 só são tentados se o dia exato não tiver
-    nenhum lançamento financeiro com o mesmo valor.
+    offsets: lista de deslocamentos de data a tentar, em ordem de prioridade.
+             Padrão None usa params.date_offsets (comportamento legado).
     """
+    if offsets is None:
+        offsets = params.date_offsets
+
     # Índice: (data, valor) -> lista de id_fin livres
-    # to_dict("records") preserva nomes de colunas com underscore (itertuples não preserva)
     fin_index: dict = defaultdict(list)
     for rec in df_fin[["_status", "_data", "_valor", "_id"]].to_dict("records"):
         if rec["_status"] == STATUS_IGNORADO_SEM_PAR:
@@ -42,12 +47,12 @@ def match_one_to_one(
     for rec_b in df_bnk[["_status", "_id", "_data", "_valor"]].to_dict("records"):
         if rec_b["_status"] != STATUS_SEM_PAREAMENTO:
             continue
-        for offset in params.date_offsets:
+        for offset in offsets:
             search_date = rec_b["_data"] + datetime.timedelta(days=offset)
             candidates = fin_index.get((search_date, rec_b["_valor"]), [])
             if candidates:
                 for id_fin in candidates:
                     pending_pairs.append((rec_b["_id"], id_fin, offset))
-                break  # Cascata: encontrou candidatos neste offset, não avança para os demais
+                break  # cascata: encontrou candidatos neste offset, não avança
 
     return df_bnk, df_fin, pending_pairs

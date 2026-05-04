@@ -65,6 +65,14 @@ def step_mapping_extrato() -> bool:
     if col_data == "(não mapeado)" or not hist_cols:
         st.info("Selecione ao menos a coluna de data e uma coluna de histórico para continuar.")
         return False
+    if valor_mod.startswith("Coluna única") and col_valor == "(não mapeado)":
+        st.info("Selecione a coluna de valor para continuar.")
+        return False
+    if not valor_mod.startswith("Coluna única") and (
+        col_deb == "(não mapeado)" or col_cre == "(não mapeado)"
+    ):
+        st.info("Selecione as colunas de débito e crédito para continuar.")
+        return False
 
     mod = ValorModalidade.COLUNA_UNICA if valor_mod.startswith("Coluna única") else ValorModalidade.DOIS_COLUNAS
     mapping = ExtratoMapping(
@@ -119,6 +127,14 @@ def _build_fin_mapping_ui(
 
     if col_data == "(não mapeado)" or not hist_cols:
         st.info("Selecione ao menos a coluna de data e uma de histórico.")
+        return False
+    if valor_mod == "Coluna única" and col_valor == "(não mapeado)":
+        st.info("Selecione a coluna de valor para continuar.")
+        return False
+    if valor_mod != "Coluna única" and (
+        col_deb == "(não mapeado)" or col_cre == "(não mapeado)"
+    ):
+        st.info("Selecione as colunas de débito e crédito para continuar.")
         return False
 
     mod = ValorModalidade.COLUNA_UNICA if valor_mod == "Coluna única" else ValorModalidade.DOIS_COLUNAS
@@ -196,9 +212,14 @@ def step_params() -> ConciliacaoParams:
     with st.expander("Tolerâncias e janela de datas", expanded=False):
         tol = st.number_input("Tolerância de valor (centavos)", min_value=0, max_value=100, value=0, key="param_tol")
         max_group = st.number_input(
-            "Tamanho máximo do grupo (N:1 / 1:N)",
-            min_value=2, max_value=15, value=5, key="param_group",
-            help="Máximo de lançamentos que podem se combinar num único pareamento.",
+            "Tamanho máximo do grupo (1:N)",
+            min_value=2, max_value=30, value=30, key="param_group",
+            help="Máximo de lançamentos financeiros que podem se combinar num único pareamento.",
+        )
+        combo_timeout = st.number_input(
+            "Tempo máximo por busca combinatória (s)",
+            min_value=0.0, max_value=60.0, value=3.0, step=0.5, key="param_combo_timeout",
+            help="Use 0 para não interromper a busca por tempo.",
         )
         offsets_str = st.text_input(
             "Offsets de data (vírgula, ex: 0,1,-1,2,-2)",
@@ -230,11 +251,14 @@ def step_params() -> ConciliacaoParams:
     params = ConciliacaoParams(
         date_offsets=offsets,
         max_group_size=int(max_group),
+        max_candidates_per_group=0,
         value_tolerance_cents=int(tol),
+        combo_timeout_sec=float(combo_timeout),
         discard_patterns=patterns,
         hist_separator=hist_sep or " - ",
         hist_prefix=hist_pfx,
         default_year=int(st.session_state.get("default_year", 0)),
+        enable_n_to_one=False,
     )
     st.session_state["params"] = params
     return params

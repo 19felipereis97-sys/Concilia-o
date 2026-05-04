@@ -81,12 +81,14 @@ def test_t03_sem_par():
 
 
 def test_t04_n_para_1_sispag():
-    """N:1 — dois bancários somam o financeiro."""
-    b, f = _run(
-        [_bnk("B1", "2024-01-15", "-50.00"),
-         _bnk("B2", "2024-01-15", "-50.00")],
-        [_fin("F1", "2024-01-15", "-100.00")],
-    )
+    """N:1 — dois bancários somam o financeiro (requer enable_n_to_one=True)."""
+    from core.engine import run_engine
+    from core.params import ConciliacaoParams
+    df_b = pd.DataFrame([_bnk("B1", "2024-01-15", "-50.00"),
+                         _bnk("B2", "2024-01-15", "-50.00")])
+    df_f = pd.DataFrame([_fin("F1", "2024-01-15", "-100.00")])
+    params = ConciliacaoParams(enable_n_to_one=True)
+    b, f = run_engine(df_b, df_f, params)
     assert b[b["_id"] == "B1"].iloc[0]["_status"] == "CONCILIADO"
     assert b[b["_id"] == "B2"].iloc[0]["_status"] == "CONCILIADO"
     assert f.iloc[0]["_status"] == "CONCILIADO"
@@ -295,3 +297,45 @@ def test_t12_dois_colunas_debito_credito():
     assert len(df) == 2
     valores = sorted([float(r["_valor"]) for _, r in df.iterrows()])
     assert valores == [-300.0, 500.0]
+
+
+def test_t18_depara_indexado_equivale_ao_fluxo_original():
+    """A versão indexada do De x Para deve preservar a mesma regra contábil."""
+    from plan.planilha_contabil import aplicar_depara_contabil, aplicar_depara_contabil_indexed, build_depara_index
+
+    depara = {"Tarifa Bancária": "1234", "Recebimento Cliente": "5678"}
+    index = build_depara_index(depara)
+    cenarios = [
+        ("Tarifa Bancária", Decimal("-10.00")),
+        ("Recebimento Cliente", Decimal("250.00")),
+        ("", Decimal("100.00")),
+        ("Sem cadastro", Decimal("-50.00")),
+    ]
+
+    for classif, valor in cenarios:
+        assert aplicar_depara_contabil(classif, valor, depara, "9999") == aplicar_depara_contabil_indexed(
+            classif, valor, index, "9999"
+        )
+
+
+def test_t19_csv_latin1_e_lido_com_fallback():
+    """CSV em cp1252/latin1 deve ser lido sem UnicodeDecodeError."""
+    from core.io_excel import read_raw
+
+    raw = "Data,Histórico,Valor\n10/01/2024,TARIFA ÇÃO,123\n".encode("cp1252")
+    df = read_raw(io.BytesIO(raw), suffix=".csv")
+    assert list(df.columns) == ["Data", "Histórico", "Valor"]
+    assert df.iloc[0]["Histórico"] == "TARIFA ÇÃO"
+
+
+def test_t20_header_duplicado_bloqueia_importacao():
+    """Cabeçalhos duplicados devem gerar erro claro para evitar mapeamento ambíguo."""
+    from core.io_excel import read_raw
+
+    raw = "Data,Valor,Valor\n10/01/2024,1,2\n".encode("utf-8")
+    try:
+        read_raw(io.BytesIO(raw), suffix=".csv")
+    except ValueError as exc:
+        assert "cabeçalhos duplicados" in str(exc)
+    else:
+        raise AssertionError("Cabeçalho duplicado deveria gerar ValueError")

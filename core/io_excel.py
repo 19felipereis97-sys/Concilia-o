@@ -17,6 +17,7 @@ import pandas as pd
 # Magic bytes para identificar o formato real independente da extensão
 _XLS_MAGIC = b"\xD0\xCF\x11\xE0"  # OLE2 Compound Document → .xls
 _ZIP_MAGIC  = b"PK\x03\x04"        # ZIP → .xlsx / .xlsm
+_CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin1")
 
 
 def _sniff_suffix(file: io.BytesIO) -> Optional[str]:
@@ -130,6 +131,36 @@ def _normalise_cell(v):
     return str(v)
 
 
+def _read_csv_robust(
+    file: Union[str, Path, io.BytesIO],
+    **kwargs,
+) -> pd.DataFrame:
+    """
+    Lê CSV tentando encodings comuns em relatórios bancários brasileiros.
+    """
+    last_exc: Exception = Exception("Formato CSV desconhecido")
+    for encoding in _CSV_ENCODINGS:
+        if hasattr(file, "seek"):
+            file.seek(0)
+        try:
+            return pd.read_csv(file, encoding=encoding, **kwargs)
+        except UnicodeDecodeError as e:
+            last_exc = e
+            continue
+    raise ValueError(
+        "Não foi possível ler o CSV. Verifique se o arquivo não está corrompido "
+        "ou salvo em uma codificação incompatível."
+    ) from last_exc
+
+
+def _ensure_has_header_row(df: pd.DataFrame, skip_rows: int) -> None:
+    if df.empty:
+        raise ValueError(
+            f"Nenhuma linha encontrada após ignorar {skip_rows} linha(s). "
+            "Revise a aba selecionada ou a quantidade de linhas de cabeçalho."
+        )
+
+
 def read_raw(
     file: Union[str, Path, io.BytesIO],
     sheet_name: Optional[str] = None,
@@ -139,7 +170,7 @@ def read_raw(
     if isinstance(file, (str, Path)):
         suffix = Path(file).suffix.lower()
     if suffix == ".csv":
-        df = pd.read_csv(file, header=None, dtype=str, keep_default_na=False)
+        df = _read_csv_robust(file, header=None, dtype=str, keep_default_na=False)
     else:
         # dtype=object preserva datetime nativos do openpyxl.
         # Com dtype=str o pandas chamaria str() nas datas, retornando o formato
@@ -150,8 +181,16 @@ def read_raw(
 
     if skip_rows > 0:
         df = df.iloc[skip_rows:].reset_index(drop=True)
+    _ensure_has_header_row(df, skip_rows)
     df.columns = [str(c).strip() for c in df.iloc[0]]
     df = df.iloc[1:].reset_index(drop=True)
+    if len(set(df.columns)) != len(df.columns):
+        duplicated = sorted({c for c in df.columns if list(df.columns).count(c) > 1})
+        raise ValueError(
+            "A planilha possui cabeçalhos duplicados: "
+            + ", ".join(str(c) for c in duplicated)
+            + ". Renomeie as colunas duplicadas antes de importar."
+        )
     return df
 
 
@@ -165,12 +204,17 @@ def preview_raw(
     if isinstance(file, (str, Path)):
         suffix = Path(file).suffix.lower()
     if suffix == ".csv":
-        df = pd.read_csv(file, header=None, dtype=str, keep_default_na=False,
-                         skiprows=skip_rows, nrows=n_rows)
+        df = _read_csv_robust(file, header=None, dtype=str, keep_default_na=False,
+                              skiprows=skip_rows, nrows=n_rows)
     else:
         rs = _real_suffix(file, suffix)
         df = _read_excel_robust(file, sheet_name=sheet_name or 0, suffix=rs,
                                 skiprows=skip_rows if skip_rows > 0 else None, nrows=n_rows)
+    if df.empty:
+        raise ValueError(
+            f"Nenhuma linha encontrada após ignorar {skip_rows} linha(s). "
+            "Revise a aba selecionada ou a quantidade de linhas de cabeçalho."
+        )
     df.columns = [f"Col {i}" for i in range(df.shape[1])]
     return df
 

@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(python -m pytest tests/test_conciliacao.py -v)",
-      "Bash(python -)"
+      "Bash(python -)",
+      "Bash(python -c ' *)",
+      "Bash(python scripts/processar_itau_022026.py)",
+      "Bash(python run_tests.py)",
+      "Bash(del \"C:\\\\Users\\\\felipe.r\\\\Desktop\\\\Conciliação\\\\_diagnostico.py\" \"C:\\\\Users\\\\felipe.r\\\\Desktop\\\\Conciliação\\\\_diagnostico2.py\")"
     ]
   }
 }

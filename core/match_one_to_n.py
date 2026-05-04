@@ -1,15 +1,22 @@
 """
 Conciliação 1:N — 1 linha bancária = soma de N linhas financeiras.
-Caso típico: extrato agrega vários recebimentos/pagamentos em um único lançamento.
 
-Executado somente após as passagens 1:1 e N:1; portanto, todas as linhas aqui
-presentes já são confirmadamente sem pareamento naqueles passos.
-A análise combinatória considera exclusivamente o mesmo dia do extrato (sem D±2).
+Suporta dois modos via parâmetro `offsets`:
+  offsets=[0]          → Passo 2: 1:N no mesmo dia, fechamento total.
+  offsets=[-1,1,-2,2]  → Passo 4: 1:N com variação de datas, fechamento total.
+                          Candidatos de datas distintas podem compor uma combinação.
+
+Em ambos os casos:
+  - Somente lançamentos financeiros ainda não conciliados participam.
+  - A soma deve fechar exatamente com o valor do extrato (dentro da tolerância).
+  - Uma combinação única → CONCILIADO automático.
+  - Múltiplas combinações → REVISAR (fila de revisão manual).
 """
 from __future__ import annotations
+import datetime
 import time
 from collections import defaultdict
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
@@ -19,74 +26,99 @@ from .normalize import (
 )
 from .params import ConciliacaoParams
 from .combo_search import find_combos
+from .candidate_selection import limit_subset_candidates
 
 
 def match_one_to_n(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
+    offsets: Optional[List[int]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Para cada linha bancária livre, busca combinações de linhas financeiras
-    livres (mesma data, mesmo sinal) cuja soma bate com o valor bancário.
+    offsets: deslocamentos de data a considerar para os candidatos financeiros.
+             None ou [0] → somente mesmo dia.
+             [-1,1,-2,2] → candidatos de datas vizinhas (podem misturar datas).
 
-    Otimizações aplicadas:
-    - Dica 3: filtra candidatos cujo |valor| > |alvo| antes da combinatória.
-    - Dica 6: usa _valor_f (float pré-computado) sem chamar float() por linha.
-    - Pre-agrupa candidatos financeiros por (data, sinal) — O(n) vs O(n²).
-    - Conjunto free_fin atualizado incrementalmente com .discard().
-    - Cap adaptativo via params.effective_max_candidates() (limita C(n,k)).
-    - Pre-check de impossibilidade: pula grupo se soma total < alvo.
-    - Deadline por grupo: interrompe find_combos se demorar demais.
-    - Combinatória delegada a combo_search.
+    Otimizações mantidas:
+    - Filtra candidatos com |valor| > |alvo| antes da combinatória (Dica 3).
+    - Usa _valor_f (float pré-computado) sem float() por linha (Dica 6).
+    - Pre-agrupa candidatos financeiros por (data, sinal).
+    - free_fin atualizado incrementalmente com .discard().
+    - Pre-check de impossibilidade: pula se soma total < alvo.
+    - Deadline por grupo (MITM O(2^(n/2)) garante performance sem cap de candidatos).
     """
+    if offsets is None:
+        offsets = [0]
+
+    is_d0_only = offsets == [0]
+    label_base = "1:N D" if is_d0_only else "1:N Dvar"
+
     tol = float(params.value_tolerance_cents) / 100
     use_deadline = params.combo_timeout_sec > 0
 
     fin_pos = dict(zip(df_fin["_id"], df_fin.index))
 
-    # Pré-agrupa linhas financeiras LIVRES por (data, sinal) — dica 6: usa _valor_f
+    # Pré-agrupa financeiros livres por (data, sinal)
     fin_groups: dict = defaultdict(list)
     cols = ["_id", "_data", "_valor", "_valor_f"] if "_valor_f" in df_fin.columns else ["_id", "_data", "_valor"]
     for rec in df_fin.loc[df_fin["_status"] == STATUS_IGNORADO_SEM_PAR, cols].to_dict("records"):
         vf = rec.get("_valor_f", float(rec["_valor"]))
         sign = vf > 0
-        fin_groups[(rec["_data"], sign)].append({"_id": rec["_id"], "_valor_f": vf})
+        fin_groups[(rec["_data"], sign)].append({
+            "_id": rec["_id"], "_valor_f": vf, "_data": rec["_data"],
+        })
 
     free_fin: set = set(df_fin.loc[df_fin["_status"] == STATUS_IGNORADO_SEM_PAR, "_id"])
 
     bnk_free_df = df_bnk[df_bnk["_status"] == STATUS_SEM_PAREAMENTO]
     bnk_cols = ["_id", "_data", "_valor", "_valor_f"] if "_valor_f" in df_bnk.columns else ["_id", "_data", "_valor"]
+
     for bi, row_b in zip(bnk_free_df.index, bnk_free_df[bnk_cols].to_dict("records")):
         target_f = row_b.get("_valor_f", float(row_b["_valor"]))
         sign = target_f > 0
         abs_target = abs(target_f)
+        bnk_date = row_b["_data"]
 
-        # Candidatos financeiros na mesma data e mesmo sinal, ainda livres
-        # Dica 3: descarta candidatos cujo |valor| > |alvo| (nunca entram numa soma válida)
-        candidatos = [
-            c for c in fin_groups.get((row_b["_data"], sign), [])
-            if c["_id"] in free_fin and abs(c["_valor_f"]) <= abs_target + tol
-        ]
+        # Coleta candidatos de todos os offsets solicitados
+        candidatos: list = []
+        seen_ids: set = set()
+        for offset in offsets:
+            search_date = bnk_date + datetime.timedelta(days=offset)
+            for c in fin_groups.get((search_date, sign), []):
+                if c["_id"] in free_fin and c["_id"] not in seen_ids and abs(c["_valor_f"]) <= abs_target + tol:
+                    candidatos.append(c)
+                    seen_ids.add(c["_id"])
 
         if len(candidatos) < 2:
             continue
 
-        # Pre-check: impossível atingir o alvo mesmo somando todos os candidatos
+        # Pre-check: impossível atingir o alvo mesmo somando todos
         if sum(abs(c["_valor_f"]) for c in candidatos) < abs_target - tol:
             continue
 
-        vals = [c["_valor_f"] for c in candidatos]
+        candidatos_busca, limited = limit_subset_candidates(
+            candidatos,
+            target_f,
+            int(getattr(params, "max_candidates_per_group", 0) or 0),
+        )
+        if len(candidatos_busca) < 2:
+            continue
+
+        vals = [c["_valor_f"] for c in candidatos_busca]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None
         matches = find_combos(vals, target_f, tol, params.max_group_size, deadline=deadline)
 
         if not matches:
+            if limited and not is_d0_only and df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
+                df_bnk.at[bi, "_status"] = STATUS_REVISAR
+                df_bnk.at[bi, "_metodo"] = f"{label_base} grupo grande ({len(candidatos)} candidatos)"
             continue
 
         if len(matches) == 1:
-            combo_rows = [candidatos[i] for i in matches[0]]
+            combo_rows = [candidatos_busca[i] for i in matches[0]]
             ids_fin = [r["_id"] for r in combo_rows]
-            metodo = f"1:N soma={len(ids_fin)}"
+            metodo = f"{label_base} soma={len(ids_fin)}"
 
             df_bnk.at[bi, "_status"] = STATUS_CONCILIADO
             df_bnk.at[bi, "_metodo"] = metodo
@@ -101,6 +133,7 @@ def match_one_to_n(
         else:
             if df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
                 df_bnk.at[bi, "_status"] = STATUS_REVISAR
-                df_bnk.at[bi, "_metodo"] = "1:N ambiguo"
+                sufixo = " grupo limitado" if limited else " ambiguo"
+                df_bnk.at[bi, "_metodo"] = f"{label_base}{sufixo}"
 
     return df_bnk, df_fin

@@ -391,6 +391,85 @@ def _mitm_k(
 # Busca completa — retorna até max_results combinações (usada na revisão manual)
 # ---------------------------------------------------------------------------
 
+def find_max_partial(
+    vals_abs: List[float],
+    target_abs: float,
+    max_k: int,
+    deadline: Optional[float] = None,
+) -> tuple:
+    """
+    Encontra o maior somatório possível ≤ target_abs usando até max_k valores
+    de vals_abs (todos positivos, já filtrados pelo chamador).
+
+    Retorna (best_sum_float, combos, timed_out) onde:
+      best_sum_float: maior soma alcançada (0.0 se nenhuma).
+      combos: lista de tuplas de índices (espaço original) que atingem best_sum.
+              Múltiplas tuplas indicam ambiguidade → chamador direciona p/ revisão.
+      timed_out: True se o deadline foi atingido antes do término (resultado parcial).
+
+    Algoritmo: DFS com poda via upper-bound ganancioso (soma dos maiores restantes).
+    Trabalha em centavos (int) para aritmética exata.
+    """
+    if not vals_abs or target_abs <= 0:
+        return 0.0, [], False
+
+    # Converte para centavos
+    vals_c = [round(v * 100) for v in vals_abs]
+    target_c = round(target_abs * 100)
+    n = len(vals_c)
+
+    # Ordena decrescente: maiores valores primeiro → melhor poda
+    order = sorted(range(n), key=lambda i: vals_c[i], reverse=True)
+    sv = [vals_c[order[i]] for i in range(n)]
+
+    # Prefix sums sobre sv (decrescente) para upper-bound O(1)
+    prefix = [0] * (n + 1)
+    for i in range(n):
+        prefix[i + 1] = prefix[i] + sv[i]
+
+    best_c = [0]
+    best_combos_sv: list = []   # índices no espaço sv
+    timed_out = [False]
+
+    def dfs(idx: int, k_rem: int, partial: int, combo: list) -> None:
+        # Registra se melhora ou empata o melhor
+        if partial > best_c[0]:
+            best_c[0] = partial
+            best_combos_sv.clear()
+            best_combos_sv.append(combo[:])
+        elif partial == best_c[0] and partial > 0:
+            best_combos_sv.append(combo[:])
+
+        if k_rem == 0 or idx >= n:
+            return
+
+        # Upper bound: somar os k_rem maiores restantes a partir de idx
+        avail = min(k_rem, n - idx)
+        upper = prefix[idx + avail] - prefix[idx]
+        if partial + upper <= best_c[0]:
+            return  # não consegue melhorar
+
+        if deadline is not None and time.monotonic() > deadline:
+            timed_out[0] = True
+            return
+
+        for i in range(idx, n):
+            v = sv[i]
+            if partial + v > target_c:
+                continue  # valor isolado já ultrapassa — tenta menores
+            combo.append(i)
+            dfs(i + 1, k_rem - 1, partial + v, combo)
+            combo.pop()
+            if timed_out[0]:
+                return
+
+    dfs(0, max_k, 0, [])
+
+    # Remapeia índices sv → índices originais
+    result_combos = [tuple(order[i] for i in c) for c in best_combos_sv]
+    return best_c[0] / 100.0, result_combos, timed_out[0]
+
+
 def find_all_combos(
     vals: List[float],
     target: float,

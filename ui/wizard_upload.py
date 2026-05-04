@@ -10,6 +10,28 @@ import pandas as pd
 from core.io_excel import get_sheet_names, preview_raw
 
 
+_FIN_STATE_KEYS = [
+    "fin_file", "fin_suffix", "fin_name", "fin2_file", "fin2_suffix", "fin2_name",
+    "fin_sheet", "fin_skip", "fin2_sheet", "fin2_skip",
+    "tmp_fin_sheet", "tmp_fin_skip", "tmp_fin2_sheet", "tmp_fin2_skip",
+    "fin_mapping", "fin2_mapping",
+    "fin_col_data", "fin_col_hist", "fin_hist_prefix", "fin_hist_sep",
+    "fin_valor_mod", "fin_col_valor", "fin_col_deb", "fin_col_cre", "fin_col_classif",
+    "rec_col_data", "rec_col_hist", "rec_hist_prefix", "rec_hist_sep",
+    "rec_valor_mod", "rec_col_valor", "rec_col_deb", "rec_col_cre", "rec_col_classif",
+    "pag_col_data", "pag_col_hist", "pag_hist_prefix", "pag_hist_sep",
+    "pag_valor_mod", "pag_col_valor", "pag_col_deb", "pag_col_cre", "pag_col_classif",
+]
+
+
+def _set_fin_modalidade(modalidade: str) -> None:
+    anterior = st.session_state.get("fin_modalidade_str")
+    if anterior and anterior != modalidade:
+        for key in _FIN_STATE_KEYS:
+            st.session_state.pop(key, None)
+    st.session_state["fin_modalidade_str"] = modalidade
+
+
 def _to_display(df: pd.DataFrame) -> pd.DataFrame:
     """Converte colunas object para str antes de passar ao st.dataframe.
     Formata datetime como DD/MM/YYYY para evitar ArrowTypeError no Streamlit."""
@@ -55,13 +77,13 @@ def step_upload_financeiro():
     )
 
     if modo_label == "Dois arquivos separados (Recebimentos e Pagamentos)":
-        st.session_state["fin_modalidade_str"] = "SEPARADOS"
+        _set_fin_modalidade("SEPARADOS")
     elif "Recebimentos" in modo_label:
-        st.session_state["fin_modalidade_str"] = "RECEBIMENTOS"
+        _set_fin_modalidade("RECEBIMENTOS")
     elif "Pagamentos" in modo_label:
-        st.session_state["fin_modalidade_str"] = "PAGAMENTOS"
+        _set_fin_modalidade("PAGAMENTOS")
     else:
-        st.session_state["fin_modalidade_str"] = "COMPLETO"
+        _set_fin_modalidade("COMPLETO")
 
     if st.session_state["fin_modalidade_str"] == "SEPARADOS":
         st.info("Carregue os dois arquivos: um de recebimentos e um de pagamentos.")

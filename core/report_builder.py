@@ -12,13 +12,14 @@ from openpyxl import Workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 
-from plan.planilha_contabil import aplicar_depara_contabil
+from plan.planilha_contabil import aplicar_depara_contabil_indexed, build_depara_index
 
 from .normalize import (
     STATUS_CONCILIADO, STATUS_CONCILIADO_MANUAL,
     STATUS_REVISAR, STATUS_REVISAR_COLISAO,
     STATUS_IGNORADO_SEM_PAR, STATUS_SEM_PAREAMENTO,
     STATUS_IGNORADO_USUARIO,
+    STATUS_PARCIAL, STATUS_PENDENTE_PARCIAL,
 )
 
 # Cores
@@ -28,6 +29,8 @@ COR_SEM_PAR        = "FFEB9C"  # amarelo
 COR_REVISAR        = "FFC7CE"  # vermelho claro
 COR_IGNORADO       = "D9D9D9"  # cinza
 COR_CABECALHO      = "2F75B6"  # azul
+COR_PARCIAL        = "FFD966"  # amarelo alaranjado — parcialmente conciliado
+COR_PENDENTE       = "F4B942"  # laranja — pendente de conciliação parcial
 
 _DATE_FMT = "DD/MM/YYYY"
 
@@ -40,8 +43,8 @@ def _header_font() -> Font:
     return Font(bold=True, color="FFFFFF")
 
 
-def _auto_width(ws, min_width=10, max_width=60):
-    for col in ws.columns:
+def _auto_width(ws, min_width=10, max_width=60, max_rows=1000):
+    for col in ws.iter_cols(max_row=min(ws.max_row, max_rows)):
         length = max(len(str(cell.value or "")) for cell in col)
         ws.column_dimensions[get_column_letter(col[0].column)].width = min(max(length + 2, min_width), max_width)
 
@@ -88,10 +91,11 @@ def build_report(
             df_bnk[col] = ""
 
     depara = depara or {}
+    depara_index = build_depara_index(depara)
     wb = Workbook()
     wb.remove(wb.active)
 
-    _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco)
+    _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco)
     _build_extrato(wb, df_bnk)
     _build_financeiro(wb, df_fin)
     _build_sem_par_bnk(wb, df_bnk)
@@ -135,7 +139,7 @@ def _resolve_historico_fin(ids_fin_str: str, fin_by_id: dict, sep: str = " - ") 
     return sep.join(hists)
 
 
-def _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco):
+def _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco):
     ws = wb.create_sheet("Relatorio Consolidado")
     headers = [
         "Data", "Historico", "Valor", "Classificacao Financeira",
@@ -158,6 +162,8 @@ def _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco):
         STATUS_REVISAR_COLISAO:   COR_REVISAR,
         STATUS_IGNORADO_SEM_PAR:  COR_IGNORADO,
         STATUS_IGNORADO_USUARIO:  COR_IGNORADO,
+        STATUS_PARCIAL:           COR_PARCIAL,
+        STATUS_PENDENTE_PARCIAL:  COR_PENDENTE,
     }
 
     # Pre-indexa financeiros por _id — elimina scans lineares O(n) por linha
@@ -175,12 +181,20 @@ def _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco):
         data_val = _as_date(row.get("_data", ""))
 
         is_expandable = (
-            ("1:N" in metodo and "ambiguo" not in metodo)
+            (("1:N D soma" in metodo or "1:N Dvar soma" in metodo or "parcial soma" in metodo)
+             and "ambiguo" not in metodo)
             or metodo == "manual"
         ) and bool(ids_fin_str.strip())
 
         if is_expandable:
-            tipo_expand = "Desmembrado (1:N)" if "1:N" in metodo else "Manual"
+            if "parcial soma" in metodo:
+                tipo_expand = "Parcial 1:N"
+            elif "Dvar" in metodo:
+                tipo_expand = "Desmembrado 1:N ±D"
+            elif "1:N" in metodo:
+                tipo_expand = "Desmembrado 1:N"
+            else:
+                tipo_expand = "Manual"
             ids_fin = [x.strip() for x in ids_fin_str.split(";") if x.strip()]
             for id_f in ids_fin:
                 fin_row = fin_by_id.get(id_f)
@@ -189,10 +203,10 @@ def _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco):
 
                 classif = str(fin_row.get("_classif", "")).strip()
                 valor_val = _to_float(fin_row.get("_valor", ""))
-                debito, credito, status_depara = aplicar_depara_contabil(
+                debito, credito, status_depara = aplicar_depara_contabil_indexed(
                     classif,
                     valor_val,
-                    depara,
+                    depara_index,
                     conta_banco,
                 )
                 hist_fin = str(fin_row.get("_historico", "")).strip()
@@ -219,21 +233,27 @@ def _build_consolidado(wb, df_bnk, df_fin, depara, conta_banco):
         else:
             classif = _resolve_classif(ids_fin_str, fin_by_id)
             tipo = ""
-            if "1:1" in metodo:
-                tipo = "Exato"
-            elif "N:1" in metodo:
-                tipo = "Agrupado (N:1)"
-            elif "1:N" in metodo:
-                tipo = "Desmembrado (1:N)"
-            elif "manual" in metodo:
+            if metodo == "1:1 D":
+                tipo = "Exato 1:1"
+            elif metodo.startswith("1:1 D"):
+                tipo = "Exato 1:1 ±D"
+            elif "parcial soma" in metodo:
+                tipo = "Parcial 1:N"
+            elif "1:N Dvar soma" in metodo:
+                tipo = "Desmembrado 1:N ±D"
+            elif "1:N D soma" in metodo:
+                tipo = "Desmembrado 1:N"
+            elif metodo.startswith("pendente:"):
+                tipo = "Pendente Parcial"
+            elif metodo == "manual":
                 tipo = "Manual"
 
             hist_fin = _resolve_historico_fin(ids_fin_str, fin_by_id)
             valor_val = _to_float(row.get("_valor", ""))
-            debito, credito, status_depara = aplicar_depara_contabil(
+            debito, credito, status_depara = aplicar_depara_contabil_indexed(
                 classif,
                 valor_val,
-                depara,
+                depara_index,
                 conta_banco,
             )
 
@@ -313,9 +333,16 @@ def _build_sem_par_bnk(wb, df_bnk):
     for cell in ws[1]:
         cell.fill = _fill(COR_CABECALHO)
         cell.font = _header_font()
-    revisar_set = {STATUS_SEM_PAREAMENTO, STATUS_REVISAR, STATUS_REVISAR_COLISAO}
+    cor_por_status = {
+        STATUS_SEM_PAREAMENTO:   COR_SEM_PAR,
+        STATUS_REVISAR:          COR_REVISAR,
+        STATUS_REVISAR_COLISAO:  COR_REVISAR,
+        STATUS_PENDENTE_PARCIAL: COR_PENDENTE,
+    }
+    revisar_set = set(cor_por_status)
     for row in df_bnk.to_dict("records"):
-        if str(row.get("_status", "")) not in revisar_set:
+        st = str(row.get("_status", ""))
+        if st not in revisar_set:
             continue
         data_val = _as_date(row.get("_data", ""))
         valor_val = _to_float(row.get("_valor", ""))
@@ -324,11 +351,11 @@ def _build_sem_par_bnk(wb, df_bnk):
             data_val,
             valor_val,
             str(row.get("_historico", "")),
-            str(row.get("_status", "")),
+            st,
         ])
         _apply_date_format(ws)
         for cell in ws[ws.max_row]:
-            cell.fill = _fill(COR_SEM_PAR)
+            cell.fill = _fill(cor_por_status.get(st, COR_SEM_PAR))
     _auto_width(ws)
 
 
@@ -376,12 +403,14 @@ def _build_resumo(wb, df_bnk, df_fin):
         return int(mask.sum()), round(float(vals_series[mask].sum()), 2)
 
     metricas = [
-        ("Conciliados (auto)",   df_bnk["_status"], bnk_vals, [STATUS_CONCILIADO]),
-        ("Conciliados (manual)", df_bnk["_status"], bnk_vals, [STATUS_CONCILIADO_MANUAL]),
-        ("A Revisar",            df_bnk["_status"], bnk_vals, [STATUS_REVISAR, STATUS_REVISAR_COLISAO]),
-        ("Banco Sem Par",        df_bnk["_status"], bnk_vals, [STATUS_SEM_PAREAMENTO]),
-        ("Financeiro Sem Par",   df_fin["_status"], fin_vals, [STATUS_IGNORADO_SEM_PAR]),
-        ("Ignorados (usuario)",  df_bnk["_status"], bnk_vals, [STATUS_IGNORADO_USUARIO]),
+        ("Conciliados (auto)",        df_bnk["_status"], bnk_vals, [STATUS_CONCILIADO]),
+        ("Conciliados (manual)",      df_bnk["_status"], bnk_vals, [STATUS_CONCILIADO_MANUAL]),
+        ("Parcialmente Conciliados",  df_bnk["_status"], bnk_vals, [STATUS_PARCIAL]),
+        ("Pendentes Parciais",        df_bnk["_status"], bnk_vals, [STATUS_PENDENTE_PARCIAL]),
+        ("A Revisar",                 df_bnk["_status"], bnk_vals, [STATUS_REVISAR, STATUS_REVISAR_COLISAO]),
+        ("Banco Não Conciliado",      df_bnk["_status"], bnk_vals, [STATUS_SEM_PAREAMENTO]),
+        ("Financeiro Sem Par",        df_fin["_status"], fin_vals, [STATUS_IGNORADO_SEM_PAR]),
+        ("Ignorados (usuario)",       df_bnk["_status"], bnk_vals, [STATUS_IGNORADO_USUARIO]),
     ]
 
     for label, status_series, vals_series, statuses in metricas:
