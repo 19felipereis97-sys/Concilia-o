@@ -248,29 +248,24 @@ def sidebar() -> str:
         inicial = (nome or email)[0].upper() if (nome or email) else "?"
         display_name = nome if nome else email
 
-        depto_html = (
-            f"<p style='margin:2px 0 0;font-size:0.75em;color:#aaa;'>{depto}</p>"
-            if depto else ""
-        )
-        st.markdown(
-            f"""<div style="display:flex;align-items:center;gap:10px;
-                padding:8px 4px 12px;">
-                <div style="width:38px;height:38px;border-radius:50%;
-                background:{cor};display:flex;align-items:center;
-                justify-content:center;font-size:1em;font-weight:700;
-                color:white;flex-shrink:0;">{inicial}</div>
-                <div style="min-width:0;">
-                    <p style="margin:0;font-size:0.85em;font-weight:600;
-                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
-                    max-width:160px;">{display_name}</p>
-                    <span style="background:{cor}22;color:{cor};padding:2px 8px;
-                    border-radius:20px;font-size:0.72em;font-weight:600;
-                    border:1px solid {cor}55;">{perfil_label}</span>
-                    {depto_html}
-                </div>
-            </div>""",
-            unsafe_allow_html=True,
-        )
+        col_av, col_info = st.columns([1, 3])
+        with col_av:
+            st.markdown(
+                f"<div style='width:38px;height:38px;border-radius:50%;background:{cor};"
+                f"display:flex;align-items:center;justify-content:center;"
+                f"font-size:1.1em;font-weight:700;color:white;margin-top:2px'>{inicial}</div>",
+                unsafe_allow_html=True,
+            )
+        with col_info:
+            st.markdown(f"**{display_name}**")
+            st.markdown(
+                f"<span style='background:{cor}22;color:{cor};padding:2px 9px;"
+                f"border-radius:20px;font-size:0.78em;font-weight:600;"
+                f"border:1px solid {cor}55'>{perfil_label}</span>",
+                unsafe_allow_html=True,
+            )
+            if depto:
+                st.caption(depto)
         st.divider()
 
         opcoes = ["Conciliação Contábil", "De x Para Geral", "Minha Conta"]
