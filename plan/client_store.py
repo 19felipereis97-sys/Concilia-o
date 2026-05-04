@@ -175,7 +175,7 @@ def authenticate_user(email: str, password: str) -> dict | None:
     """Retorna dict do usuário se autenticado com sucesso, None caso contrário."""
     with _conn() as con:
         row = con.execute(
-            "SELECT id, email, senha_hash, perfil, ativo, troca_senha_obrigatoria FROM usuarios WHERE email=?",
+            "SELECT id, email, senha_hash, nome, departamento, perfil, ativo, troca_senha_obrigatoria FROM usuarios WHERE email=?",
             (email,),
         ).fetchone()
     if row is None:

@@ -43,6 +43,8 @@ def show_login() -> bool:
             st.session_state["usuario_email"] = email.strip()
             st.session_state["usuario_perfil"] = user["perfil"]
             st.session_state["usuario_id"] = user["id"]
+            st.session_state["usuario_nome"] = user.get("nome", "")
+            st.session_state["usuario_departamento"] = user.get("departamento", "")
             st.session_state["troca_senha"] = bool(user["troca_senha_obrigatoria"])
             return True
 

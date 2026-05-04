@@ -228,11 +228,49 @@ def _render_agent_report():
 
 def sidebar() -> str:
     with st.sidebar:
+        # ── Logo ──────────────────────────────────────────────────────────────
+        logo_path = Path(__file__).parent / "assets" / "logo_jca.png"
+        if logo_path.exists():
+            st.image(str(logo_path), use_container_width=True)
+        else:
+            st.markdown("**JCA Contadores Associados**")
+
+        st.divider()
+
+        # ── Card do usuário ───────────────────────────────────────────────────
         email = st.session_state.get("usuario_email", "")
         perfil = st.session_state.get("usuario_perfil", "")
+        nome = st.session_state.get("usuario_nome", "").strip()
+        depto = st.session_state.get("usuario_departamento", "").strip()
 
-        st.markdown(f"**{email}**")
-        st.caption(f"Perfil: {'Administrador' if perfil == 'admin' else 'Operacional'}")
+        perfil_label = "Administrador" if perfil == "admin" else "Operacional"
+        cor = "#FF9500" if perfil == "admin" else "#1565C0"
+        inicial = (nome or email)[0].upper() if (nome or email) else "?"
+        display_name = nome if nome else email
+
+        depto_html = (
+            f"<p style='margin:2px 0 0;font-size:0.75em;color:#aaa;'>{depto}</p>"
+            if depto else ""
+        )
+        st.markdown(
+            f"""<div style="display:flex;align-items:center;gap:10px;
+                padding:8px 4px 12px;">
+                <div style="width:38px;height:38px;border-radius:50%;
+                background:{cor};display:flex;align-items:center;
+                justify-content:center;font-size:1em;font-weight:700;
+                color:white;flex-shrink:0;">{inicial}</div>
+                <div style="min-width:0;">
+                    <p style="margin:0;font-size:0.85em;font-weight:600;
+                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+                    max-width:160px;">{display_name}</p>
+                    <span style="background:{cor}22;color:{cor};padding:2px 8px;
+                    border-radius:20px;font-size:0.72em;font-weight:600;
+                    border:1px solid {cor}55;">{perfil_label}</span>
+                    {depto_html}
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
         st.divider()
 
         opcoes = ["Conciliação Contábil", "De x Para Geral", "Minha Conta"]
