@@ -12,6 +12,11 @@ from core.mapping import (
 )
 from core.params import ConciliacaoParams
 
+
+@st.cache_data(show_spinner=False)
+def _cached_get_columns(raw: bytes, sheet_name, skip_rows: int, suffix: str) -> list:
+    return get_columns(io.BytesIO(raw), sheet_name=sheet_name, skip_rows=skip_rows, suffix=suffix)
+
 _MODALIDADE_STR_MAP = {
     "COMPLETO":      FinanceiroModalidade.COMPLETO,
     "RECEBIMENTOS":  FinanceiroModalidade.RECEBIMENTOS,
@@ -31,8 +36,7 @@ def _get_cols(file_key: str, sheet_key: str, skip_key: str, suffix_key: str):
     if sheet is None and suffix != ".csv":
         st.warning(f"Aba não configurada ('{sheet_key}' ausente). Volte à etapa de configuração.")
     try:
-        cols = get_columns(io.BytesIO(raw), sheet_name=sheet, skip_rows=skip, suffix=suffix)
-        return cols
+        return _cached_get_columns(raw, sheet, skip, suffix)
     except Exception as e:
         st.error(f"Erro ao ler colunas de '{file_key}' (sheet={sheet!r}, skip={skip}): {e}")
         return []
@@ -258,7 +262,7 @@ def step_params() -> ConciliacaoParams:
         hist_separator=hist_sep or " - ",
         hist_prefix=hist_pfx,
         default_year=int(st.session_state.get("default_year", 0)),
-        enable_n_to_one=False,
+        enable_n_to_one=True,
     )
     st.session_state["params"] = params
     return params

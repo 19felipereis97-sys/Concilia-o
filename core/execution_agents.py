@@ -68,10 +68,14 @@ def parameter_agent(df_bnk: pd.DataFrame, df_fin: pd.DataFrame, params: Any) -> 
     timeout = float(getattr(params, "combo_timeout_sec", 0) or 0)
     max_group = int(getattr(params, "max_group_size", 0) or 0)
 
-    findings.append(_finding(
-        "Sugestão de Parâmetros", "info", "N:1 inativo por política",
-        "O fluxo permanece orientado de banco para financeiro. Este agente não recomenda ativar N:1.",
-    ))
+    if getattr(params, "enable_n_to_one", False):
+        n_to_one_matches = int(
+            df_bnk["_metodo"].astype(str).str.startswith("N:1").sum()
+        ) if "_metodo" in df_bnk.columns else 0
+        findings.append(_finding(
+            "Sugestão de Parâmetros", "info", "N:1 ativo",
+            f"{n_to_one_matches} lançamento(s) bancário(s) conciliados via N:1 (N extratos → 1 financeiro).",
+        ))
     if total_bnk >= 800 or total_fin >= 1000:
         findings.append(_finding(
             "Sugestão de Parâmetros", "info", "Base grande detectada",
@@ -135,7 +139,7 @@ def supervisor_agent(
             "linhas_financeiro": len(df_fin),
             "periodo_banco": _date_span(df_bnk),
             "periodo_financeiro": _date_span(df_fin),
-            "n_to_one": "inativo",
+            "n_to_one": "ativo" if getattr(params, "enable_n_to_one", False) else "inativo",
         },
         "findings": findings,
     }

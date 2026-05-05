@@ -6,9 +6,10 @@ Ordem de execução (extrato → financeiro):
   2. 1:N  D0   — mesmo dia, soma de N financeiros = 1 extrato, fechamento total.
   3. 1:1  D±   — variação de datas em cascata (D-1 > D+1 > D-2 > D+2).
   4. 1:N  D±   — variação de datas, soma de N financeiros, fechamento total.
-  5. 1:N  D0 parcial — maior somatório possível ≤ valor do extrato, mesmo dia.
+  5. N:1  D0   — N extratos = 1 financeiro, mesmo dia (ativado por padrão).
+  6. 1:N  D0 parcial — maior somatório possível ≤ valor do extrato, mesmo dia.
+  7. N:1  D0   — segunda passagem, aproveita financeiros liberados pelo parcial.
 
-  N:1 desativado por padrão (params.enable_n_to_one=False).
   Após todos os passos, linhas de pendência parcial são anexadas ao df_bnk.
 """
 from __future__ import annotations
@@ -77,7 +78,11 @@ def run_engine(
     if var_offsets:
         df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=var_offsets)
 
-    # ── Passo 5: 1:N D0 parcial (maior somatório ≤ extrato, mesmo dia) ───────
+    # ── Passo 5: N:1 D0 (N extratos = 1 financeiro, mesmo dia) ─────────────────
+    if params.enable_n_to_one:
+        df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params)
+
+    # ── Passo 6: 1:N D0 parcial (maior somatório ≤ extrato, mesmo dia) ───────
     df_bnk, df_fin, pending_rows = match_partial_one_to_n(df_bnk, df_fin, params)
 
     if pending_rows:
@@ -88,8 +93,9 @@ def run_engine(
         # Categorical não é aplicado às linhas de pendência — status já é string válida
         df_bnk = pd.concat([df_bnk, pending_df[df_bnk.columns]], ignore_index=True)
 
-    # ── N:1 (desativado por padrão) ───────────────────────────────────────────
+    # ── Passo 7: N:1 D0 — segunda passagem (após parcial) ────────────────────
     if params.enable_n_to_one:
-        df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params)
+        df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params,
+                                         extra_bnk_statuses=[STATUS_PENDENTE_PARCIAL])
 
     return df_bnk, df_fin

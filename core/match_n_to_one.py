@@ -15,7 +15,7 @@ import pandas as pd
 
 from .normalize import (
     STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
-    STATUS_CONCILIADO, STATUS_REVISAR,
+    STATUS_CONCILIADO, STATUS_REVISAR, STATUS_PENDENTE_PARCIAL,
 )
 from .params import ConciliacaoParams
 from .combo_search import find_combos
@@ -26,6 +26,7 @@ def match_n_to_one(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
+    extra_bnk_statuses: list | None = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Para cada linha financeira livre, busca combinações de linhas bancárias
@@ -43,17 +44,19 @@ def match_n_to_one(
     tol = float(params.value_tolerance_cents) / 100
     use_deadline = params.combo_timeout_sec > 0
 
+    _free_statuses = {STATUS_SEM_PAREAMENTO, *(extra_bnk_statuses or [])}
+
     bnk_pos = dict(zip(df_bnk["_id"], df_bnk.index))
 
     # Pré-agrupa linhas bancárias LIVRES por (data, sinal) — dica 6: usa _valor_f
     bnk_groups: dict = defaultdict(list)
     cols = ["_id", "_data", "_valor", "_valor_f"] if "_valor_f" in df_bnk.columns else ["_id", "_data", "_valor"]
-    for rec in df_bnk.loc[df_bnk["_status"] == STATUS_SEM_PAREAMENTO, cols].to_dict("records"):
+    for rec in df_bnk.loc[df_bnk["_status"].isin(_free_statuses), cols].to_dict("records"):
         vf = rec.get("_valor_f", float(rec["_valor"]))
         sign = vf > 0
         bnk_groups[(rec["_data"], sign)].append({"_id": rec["_id"], "_valor_f": vf})
 
-    free_bnk: set = set(df_bnk.loc[df_bnk["_status"] == STATUS_SEM_PAREAMENTO, "_id"])
+    free_bnk: set = set(df_bnk.loc[df_bnk["_status"].isin(_free_statuses), "_id"])
 
     fin_free_df = df_fin[df_fin["_status"] == STATUS_IGNORADO_SEM_PAR]
     fin_cols = ["_id", "_data", "_valor", "_valor_f"] if "_valor_f" in df_fin.columns else ["_id", "_data", "_valor"]
@@ -114,7 +117,7 @@ def match_n_to_one(
                         continue
                     seen.add(rid)
                     bi = bnk_pos[rid]
-                    if df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
+                    if df_bnk.at[bi, "_status"] in _free_statuses:
                         df_bnk.at[bi, "_status"] = STATUS_REVISAR
                         df_bnk.at[bi, "_metodo"] = "N:1 grupo limitado" if limited else "N:1 ambiguo"
 

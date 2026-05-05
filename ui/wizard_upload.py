@@ -10,6 +10,16 @@ import pandas as pd
 from core.io_excel import get_sheet_names, preview_raw
 
 
+@st.cache_data(show_spinner=False)
+def _cached_sheet_names(raw: bytes, suffix: str) -> list[str]:
+    return get_sheet_names(io.BytesIO(raw), suffix=suffix)
+
+
+@st.cache_data(show_spinner=False)
+def _cached_preview_raw(raw: bytes, sheet_name, skip_rows: int, suffix: str, n_rows: int) -> object:
+    return preview_raw(io.BytesIO(raw), sheet_name=sheet_name, skip_rows=skip_rows, suffix=suffix, n_rows=n_rows)
+
+
 _FIN_STATE_KEYS = [
     "fin_file", "fin_suffix", "fin_name", "fin2_file", "fin2_suffix", "fin2_name",
     "fin_sheet", "fin_skip", "fin2_sheet", "fin2_skip",
@@ -159,11 +169,10 @@ def step_header_config_extrato():
 
     raw = st.session_state["extrato_file"]
     suffix = st.session_state.get("extrato_suffix", ".xlsx")
-    file_obj = io.BytesIO(raw)
 
     if suffix != ".csv":
         try:
-            sheets = get_sheet_names(file_obj, suffix=suffix)
+            sheets = _cached_sheet_names(raw, suffix)
         except Exception as e:
             st.error(f"Não foi possível ler o arquivo do extrato: {e}")
             return False
@@ -186,9 +195,8 @@ def step_header_config_extrato():
     ano = st.number_input("Ano padrão (para datas no formato DD/MM sem ano)", min_value=2000, max_value=2099, value=_this_year, key="tmp_default_year")
     st.session_state["default_year"] = int(ano)
 
-    file_obj.seek(0)
     try:
-        preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, skip_rows=int(skip), suffix=suffix, n_rows=8)
+        preview = _cached_preview_raw(raw, sheet if sheet != "csv" else None, int(skip), suffix, 8)
         st.write(f"**Pré-visualização — dados após ignorar {int(skip)} linha(s):**")
         st.dataframe(_to_display(preview), width='stretch')
     except Exception as e:
@@ -214,11 +222,10 @@ def _config_fin_single(
         return False
 
     suffix = st.session_state.get(suffix_key, ".xlsx")
-    file_obj = io.BytesIO(raw)
 
     if suffix != ".csv":
         try:
-            sheets = get_sheet_names(file_obj, suffix=suffix)
+            sheets = _cached_sheet_names(raw, suffix)
         except Exception as e:
             st.error(f"Não foi possível ler o arquivo{' — ' + label if label else ''}: {e}")
             return False
@@ -237,9 +244,8 @@ def _config_fin_single(
     skip = st.number_input(caption_skip, min_value=0, max_value=20, value=0, key=tmp_skip_key)
     st.session_state[skip_key] = int(skip)
 
-    file_obj.seek(0)
     try:
-        preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, skip_rows=int(skip), suffix=suffix, n_rows=8)
+        preview = _cached_preview_raw(raw, sheet if sheet != "csv" else None, int(skip), suffix, 8)
         title = f"**Pré-visualização — {label} (após ignorar {int(skip)} linha(s)):**" if label else f"**Pré-visualização — dados após ignorar {int(skip)} linha(s):**"
         st.write(title)
         st.dataframe(_to_display(preview), width='stretch')
@@ -283,11 +289,10 @@ def step_header_config_financeiro():
     else:
         raw = st.session_state["fin_file"]
         suffix = st.session_state.get("fin_suffix", ".xlsx")
-        file_obj = io.BytesIO(raw)
 
         if suffix != ".csv":
             try:
-                sheets = get_sheet_names(file_obj, suffix=suffix)
+                sheets = _cached_sheet_names(raw, suffix)
             except Exception as e:
                 st.error(f"Não foi possível ler o arquivo financeiro: {e}")
                 return False
@@ -310,9 +315,8 @@ def step_header_config_financeiro():
         ano = st.number_input("Ano padrão (para datas no formato DD/MM sem ano)", min_value=2000, max_value=2099, value=_this_year, key="tmp_default_year")
         st.session_state["default_year"] = int(ano)
 
-        file_obj.seek(0)
         try:
-            preview = preview_raw(file_obj, sheet_name=sheet if sheet != "csv" else None, skip_rows=int(skip), suffix=suffix, n_rows=8)
+            preview = _cached_preview_raw(raw, sheet if sheet != "csv" else None, int(skip), suffix, 8)
             st.write(f"**Pré-visualização — dados após ignorar {int(skip)} linha(s):**")
             st.dataframe(_to_display(preview), width='stretch')
         except Exception as e:

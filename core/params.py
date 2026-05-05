@@ -25,9 +25,7 @@ class ConciliacaoParams:
     hist_separator: str = " - "
     hist_prefix: str = ""
     default_year: int = 0  # 0 = usa o ano corrente ao parsear datas DD/MM sem ano
-    # N:1 desativado por padrão — o fluxo principal parte do extrato → financeiro.
-    # Ativar somente via parâmetro explícito quando necessário.
-    enable_n_to_one: bool = False
+    enable_n_to_one: bool = True
 
     def offset_label(self, k: int) -> str:
         if k == 0:

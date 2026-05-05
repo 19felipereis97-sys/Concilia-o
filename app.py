@@ -162,12 +162,12 @@ def _normalizar_financeiro_incremental(params: ConciliacaoParams | None = None) 
     st.session_state["_norm_fin_fp"] = fp
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_clientes_display(apenas_ativos: bool = True) -> list[dict]:
     return list_clientes_display(apenas_ativos=apenas_ativos)
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def _cached_depara_rows(cliente_id: int) -> list[dict]:
     return get_depara(cliente_id)
 
@@ -518,7 +518,6 @@ def _executar_conciliacao():
     with st.spinner("Executando conciliação..."):
         try:
             params = st.session_state["params"]
-            params.enable_n_to_one = False
             modalidade_str = st.session_state.get("fin_modalidade_str", "COMPLETO")
 
             # Re-normaliza apenas se discard_patterns ou default_year mudaram
@@ -634,10 +633,14 @@ def _etapa_revisao_download():
                 "RELATORIO_GERADO",
                 f"cliente={cliente_fluxo}",
             )
+            _cli_data = get_cliente_by_id(cliente_id)
+            _codigo = (_cli_data.get("codigo_interno") or "").strip() if _cli_data else ""
+            _nome_trunc = ((_cli_data.get("nome") or "").strip()[:20] if _cli_data else "")
+            _fname = f"Conciliacao_{_codigo} - {_nome_trunc}.xlsx" if _codigo else "relatorio_conciliacao.xlsx"
             st.download_button(
                 label="Baixar Relatório (.xlsx)",
                 data=xlsx_bytes,
-                file_name="relatorio_conciliacao.xlsx",
+                file_name=_fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
             _render_performance_timings()
