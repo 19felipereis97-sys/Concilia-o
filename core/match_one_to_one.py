@@ -25,6 +25,7 @@ def match_one_to_one(
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
     offsets: Optional[List[int]] = None,
+    extra_bnk_statuses: Optional[List[str]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[Tuple]]:
     """
     Retorna (df_bnk, df_fin, pending_pairs).
@@ -32,9 +33,13 @@ def match_one_to_one(
 
     offsets: lista de deslocamentos de data a tentar, em ordem de prioridade.
              Padrão None usa params.date_offsets (comportamento legado).
+    extra_bnk_statuses: statuses adicionais de bancário considerados livres
+                        além de STATUS_SEM_PAREAMENTO (ex: STATUS_PENDENTE_PARCIAL).
     """
     if offsets is None:
         offsets = params.date_offsets
+
+    _free_statuses = {STATUS_SEM_PAREAMENTO, *(extra_bnk_statuses or [])}
 
     # Índice: (data, valor) -> lista de id_fin livres
     fin_index: dict = defaultdict(list)
@@ -45,7 +50,7 @@ def match_one_to_one(
     pending_pairs: List[Tuple] = []
 
     for rec_b in df_bnk[["_status", "_id", "_data", "_valor"]].to_dict("records"):
-        if rec_b["_status"] != STATUS_SEM_PAREAMENTO:
+        if rec_b["_status"] not in _free_statuses:
             continue
         for offset in offsets:
             search_date = rec_b["_data"] + datetime.timedelta(days=offset)

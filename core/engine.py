@@ -8,6 +8,7 @@ Ordem de execução (extrato → financeiro):
   4. 1:N  D±   — variação de datas, soma de N financeiros, fechamento total.
   5. N:1  D0   — N extratos = 1 financeiro, mesmo dia (ativado por padrão).
   6. 1:N  D0 parcial — maior somatório possível ≤ valor do extrato, mesmo dia.
+  6.5. 1:1 D0  — segunda passagem, captura lançamentos remanescentes que batem 1:1.
   7. N:1  D0   — segunda passagem, aproveita financeiros liberados pelo parcial.
 
   Após todos os passos, linhas de pendência parcial são anexadas ao df_bnk.
@@ -92,6 +93,13 @@ def run_engine(
                 pending_df[col] = ""
         # Categorical não é aplicado às linhas de pendência — status já é string válida
         df_bnk = pd.concat([df_bnk, pending_df[df_bnk.columns]], ignore_index=True)
+
+    # ── Passo 6.5: 1:1 D0 — segunda passagem (lançamentos remanescentes) ────────
+    df_bnk, df_fin, pairs_post = match_one_to_one(
+        df_bnk, df_fin, params, offsets=[0],
+        extra_bnk_statuses=[STATUS_PENDENTE_PARCIAL],
+    )
+    df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_post, params)
 
     # ── Passo 7: N:1 D0 — segunda passagem (após parcial) ────────────────────
     if params.enable_n_to_one:
