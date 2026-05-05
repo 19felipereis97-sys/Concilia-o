@@ -184,6 +184,8 @@ def read_raw(
     _ensure_has_header_row(df, skip_rows)
     df.columns = [str(c).strip() for c in df.iloc[0]]
     df = df.iloc[1:].reset_index(drop=True)
+    # Descarta colunas sem nome (células vazias no cabeçalho — artefato comum do Excel)
+    df = df.loc[:, df.columns != ""]
     if len(set(df.columns)) != len(df.columns):
         duplicated = sorted({c for c in df.columns if list(df.columns).count(c) > 1})
         raise ValueError(
