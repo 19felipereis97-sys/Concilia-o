@@ -3,6 +3,7 @@ Persistência SQLite: clientes, usuários, De-Para contábil e logs de auditoria
 """
 from __future__ import annotations
 import io
+import json
 import os
 import sqlite3
 import hashlib
@@ -104,6 +105,50 @@ def restore_database_backup(data: bytes) -> None:
             tmp_path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def get_storage_health() -> dict:
+    """Retorna sinais simples para validar se o ambiente esta apto a producao."""
+    init_db()
+    checks: list[dict] = []
+    env_configured = bool(os.environ.get("CONCILIADOR_DB_PATH", "").strip())
+    checks.append({
+        "item": "Banco fora do padrao local",
+        "status": "OK" if env_configured else "ATENCAO",
+        "detalhe": "CONCILIADOR_DB_PATH configurado" if env_configured else "Usando data/conciliador.db do projeto",
+    })
+
+    try:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(dir=str(DB_PATH.parent), delete=True) as tmp:
+            tmp.write(b"ok")
+        checks.append({"item": "Diretorio do banco gravavel", "status": "OK", "detalhe": str(DB_PATH.parent)})
+    except Exception as e:
+        checks.append({"item": "Diretorio do banco gravavel", "status": "ERRO", "detalhe": str(e)})
+
+    try:
+        with _conn() as con:
+            tables = {
+                row[0]
+                for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            }
+        required = {"clientes", "usuarios", "depara", "conciliacao_templates", "logs"}
+        missing = required - tables
+        checks.append({
+            "item": "Schema SQLite",
+            "status": "OK" if not missing else "ERRO",
+            "detalhe": "Tabelas principais presentes" if not missing else "Ausentes: " + ", ".join(sorted(missing)),
+        })
+    except Exception as e:
+        checks.append({"item": "Schema SQLite", "status": "ERRO", "detalhe": str(e)})
+
+    try:
+        backup_size = len(export_database_backup())
+        checks.append({"item": "Backup exportavel", "status": "OK", "detalhe": f"{backup_size} bytes"})
+    except Exception as e:
+        checks.append({"item": "Backup exportavel", "status": "ERRO", "detalhe": str(e)})
+
+    return {"db_path": str(DB_PATH), "checks": checks}
 
 
 def _migrate(con: sqlite3.Connection):
@@ -215,6 +260,16 @@ def init_db():
             acao TEXT NOT NULL,
             detalhes TEXT,
             criado_em TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS conciliacao_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cliente_id INTEGER NOT NULL,
+            banco_nome TEXT NOT NULL DEFAULT '',
+            nome TEXT NOT NULL DEFAULT 'Padrao',
+            config_json TEXT NOT NULL,
+            usuario TEXT NOT NULL DEFAULT '',
+            atualizado_em TEXT NOT NULL,
+            UNIQUE(cliente_id, banco_nome, nome)
         );
         """)
         _migrate(con)
@@ -692,6 +747,7 @@ def delete_cliente(cliente_id: int):
     """Remove o cliente e todas as suas regras De-Para."""
     with _conn() as con:
         con.execute("DELETE FROM depara WHERE cliente_id=?", (cliente_id,))
+        con.execute("DELETE FROM conciliacao_templates WHERE cliente_id=?", (cliente_id,))
         con.execute("DELETE FROM clientes WHERE id=?", (cliente_id,))
 
 
@@ -853,6 +909,73 @@ def set_conta_banco(cliente_id: int, conta: str):
         con.execute("UPDATE clientes SET conta_banco=? WHERE id=?", (conta, cliente_id))
 
 
+# -- Templates de configuração do wizard -----------------------------------------
+
+def list_conciliacao_templates(cliente_id: int) -> List[dict]:
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT id, cliente_id, banco_nome, nome, usuario, atualizado_em
+               FROM conciliacao_templates
+               WHERE cliente_id=?
+               ORDER BY banco_nome COLLATE NOCASE, nome COLLATE NOCASE""",
+            (cliente_id,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_conciliacao_template(template_id: int) -> Optional[dict]:
+    with _conn() as con:
+        row = con.execute(
+            """SELECT id, cliente_id, banco_nome, nome, config_json, usuario, atualizado_em
+               FROM conciliacao_templates
+               WHERE id=?""",
+            (template_id,),
+        ).fetchone()
+    if not row:
+        return None
+    result = dict(row)
+    try:
+        result["config"] = json.loads(result.pop("config_json") or "{}")
+    except json.JSONDecodeError:
+        result["config"] = {}
+    return result
+
+
+def upsert_conciliacao_template(
+    cliente_id: int,
+    banco_nome: str,
+    nome: str,
+    config: dict,
+    usuario: str = "",
+) -> int:
+    banco_nome = str(banco_nome or "").strip()
+    nome = str(nome or "Padrao").strip() or "Padrao"
+    payload = json.dumps(config or {}, ensure_ascii=False, sort_keys=True)
+    now = datetime.datetime.now().isoformat()
+    with _conn() as con:
+        con.execute(
+            """INSERT INTO conciliacao_templates
+                 (cliente_id, banco_nome, nome, config_json, usuario, atualizado_em)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(cliente_id, banco_nome, nome) DO UPDATE SET
+                 config_json=excluded.config_json,
+                 usuario=excluded.usuario,
+                 atualizado_em=excluded.atualizado_em""",
+            (cliente_id, banco_nome, nome, payload, usuario, now),
+        )
+        row = con.execute(
+            """SELECT id FROM conciliacao_templates
+               WHERE cliente_id=? AND banco_nome=? AND nome=?""",
+            (cliente_id, banco_nome, nome),
+        ).fetchone()
+    return int(row["id"]) if row else 0
+
+
+def delete_conciliacao_template(template_id: int) -> None:
+    with _conn() as con:
+        con.execute("DELETE FROM conciliacao_templates WHERE id=?", (template_id,))
+
+
 # -- Logs -------------------------------------------------------------------------
 
 def log_acao(usuario: str, acao: str, detalhes: str = ""):
@@ -893,4 +1016,3 @@ def list_logs(
     with _conn() as con:
         rows = con.execute(query, params).fetchall()
     return [dict(r) for r in rows]
-

@@ -23,6 +23,7 @@ from plan.client_store import (
     update_depara_batch, import_depara_stream,
     get_cliente_by_id, get_clientes_do_grupo, replicate_depara,
     get_conta_banco, set_conta_banco,
+    list_conciliacao_templates, get_conciliacao_template, delete_conciliacao_template,
     log_acao, log_depara_change, change_password,
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
@@ -47,7 +48,7 @@ from ui.wizard_review import step_review
 from ui.components import progress_bar
 from ui.login import show_login, show_change_password_required
 from ui.admin import show_admin_panel
-from core.wizard_persistence import apply_wizard_config
+from core.wizard_persistence import apply_wizard_config, apply_wizard_config_data
 
 init_db()
 
@@ -400,6 +401,18 @@ def _step_cliente_conta_banco() -> bool:
     if cliente_id and conta_banco:
         set_conta_banco(cliente_id, conta_banco)
 
+    banco_layout = st.text_input(
+        "Banco/layout da configuração",
+        value=st.session_state.get("banco_layout_conciliacao", ""),
+        key="banco_layout_conciliacao_input",
+        placeholder="Ex.: Bradesco, Itau, SISPAG, Extrato padrao",
+        help="Use este campo para salvar e reaplicar templates de mapeamento por cliente e banco.",
+    ).strip()
+    st.session_state["banco_layout_conciliacao"] = banco_layout
+
+    if cliente_id:
+        _render_template_selector(cliente_id)
+
     if not cliente_id:
         st.warning("Selecione um cliente válido para vincular o De x Para.")
         return False
@@ -407,6 +420,75 @@ def _step_cliente_conta_banco() -> bool:
         st.warning("Informe a conta contábil do banco antes de avançar.")
         return False
     return True
+
+
+def _sync_tmp_keys_after_template() -> None:
+    pairs = {
+        "tmp_extrato_sheet": "extrato_sheet",
+        "tmp_extrato_skip": "extrato_skip",
+        "tmp_fin_sheet": "fin_sheet",
+        "tmp_fin_skip": "fin_skip",
+        "tmp_fin2_sheet": "fin2_sheet",
+        "tmp_fin2_skip": "fin2_skip",
+        "tmp_default_year": "default_year",
+    }
+    for tmp_key, source_key in pairs.items():
+        if source_key in st.session_state:
+            st.session_state[tmp_key] = st.session_state[source_key]
+    for key in ["df_bnk", "df_fin", "_norm_bnk_fp", "_norm_fin_fp", "params"]:
+        st.session_state.pop(key, None)
+
+
+def _render_template_selector(cliente_id: int) -> None:
+    templates = list_conciliacao_templates(cliente_id)
+    if not templates:
+        st.caption("Nenhum template salvo para este cliente ainda.")
+        return
+
+    labels = {
+        t["id"]: (
+            f"{t['banco_nome'] or 'Sem banco'} / {t['nome']} "
+            f"- atualizado em {str(t['atualizado_em'])[:10]}"
+        )
+        for t in templates
+    }
+    col_tpl, col_apply, col_del = st.columns([4, 1, 1])
+    with col_tpl:
+        template_id = st.selectbox(
+            "Template salvo",
+            list(labels),
+            key="conc_template_id",
+            format_func=lambda tid: labels.get(tid, str(tid)),
+        )
+    with col_apply:
+        st.write("")
+        if st.button("Aplicar", key="conc_template_apply", use_container_width=True):
+            tpl = get_conciliacao_template(template_id)
+            if tpl and tpl.get("config"):
+                apply_wizard_config_data(st.session_state, tpl["config"], overwrite=True)
+                st.session_state["banco_layout_conciliacao"] = tpl.get("banco_nome", "")
+                st.session_state["banco_layout_conciliacao_input"] = tpl.get("banco_nome", "")
+                _sync_tmp_keys_after_template()
+                log_acao(
+                    st.session_state.get("usuario_email", "desconhecido"),
+                    "TEMPLATE_CONCILIACAO_APLICADO",
+                    f"cliente_id={cliente_id};template={tpl.get('nome', '')};banco={tpl.get('banco_nome', '')}",
+                )
+                st.success("Template aplicado ao wizard.")
+                st.rerun()
+            else:
+                st.error("Template vazio ou inválido.")
+    with col_del:
+        st.write("")
+        if st.button("Excluir", key="conc_template_delete", use_container_width=True):
+            delete_conciliacao_template(template_id)
+            log_acao(
+                st.session_state.get("usuario_email", "desconhecido"),
+                "TEMPLATE_CONCILIACAO_EXCLUIDO",
+                f"cliente_id={cliente_id};template_id={template_id}",
+            )
+            st.success("Template excluído.")
+            st.rerun()
 
 
 # ── Wizard de conciliação ──────────────────────────────────────────────────────

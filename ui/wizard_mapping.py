@@ -3,6 +3,7 @@ Etapas do wizard: mapeamento de colunas e parâmetros.
 """
 from __future__ import annotations
 import io
+import json
 import streamlit as st
 
 from core.io_excel import get_columns
@@ -11,7 +12,8 @@ from core.mapping import (
     ValorModalidade, FinanceiroModalidade,
 )
 from core.params import ConciliacaoParams
-from core.wizard_persistence import save_wizard_config
+from core.wizard_persistence import get_wizard_config_snapshot, save_wizard_config
+from plan.client_store import log_acao, upsert_conciliacao_template
 
 
 @st.cache_data(show_spinner=False)
@@ -272,4 +274,38 @@ def step_params() -> ConciliacaoParams:
     )
     st.session_state["params"] = params
     save_wizard_config(st.session_state)
+    _save_cliente_banco_template()
     return params
+
+
+def _save_cliente_banco_template() -> None:
+    cliente_id = st.session_state.get("cliente_conciliacao_id")
+    if not cliente_id:
+        return
+    banco_nome = str(st.session_state.get("banco_layout_conciliacao", "")).strip()
+    if not banco_nome:
+        return
+
+    usuario = st.session_state.get("usuario_email", "")
+    snapshot = get_wizard_config_snapshot(st.session_state)
+    signature = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str)
+    sig_key = f"_template_saved_sig_{cliente_id}_{banco_nome}"
+    if st.session_state.get(sig_key) == signature:
+        return
+
+    template_id = upsert_conciliacao_template(
+        int(cliente_id),
+        banco_nome,
+        "Padrao",
+        snapshot,
+        usuario,
+    )
+    st.session_state[sig_key] = signature
+    if not st.session_state.get(f"_template_saved_notice_{template_id}"):
+        st.caption(f"Template salvo para este cliente/banco: {banco_nome}.")
+        st.session_state[f"_template_saved_notice_{template_id}"] = True
+    log_acao(
+        usuario or "desconhecido",
+        "TEMPLATE_CONCILIACAO_SALVO",
+        f"cliente_id={cliente_id};template_id={template_id};banco={banco_nome}",
+    )

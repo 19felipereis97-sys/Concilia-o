@@ -55,9 +55,8 @@ _MAPPING_KEYS: dict[str, type] = {
 }
 
 
-def save_wizard_config(session_state: Any) -> None:
-    """Salva as configurações relevantes do session_state em disco."""
-    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+def get_wizard_config_snapshot(session_state: Any) -> dict[str, Any]:
+    """Retorna um snapshot serializavel da configuracao atual do wizard."""
     data: dict[str, Any] = {}
 
     for key in _CONFIG_KEYS + _WIDGET_KEYS:
@@ -69,6 +68,14 @@ def save_wizard_config(session_state: Any) -> None:
         obj = session_state.get(key)
         if obj is not None and dataclasses.is_dataclass(obj):
             data[key] = dataclasses.asdict(obj)
+
+    return data
+
+
+def save_wizard_config(session_state: Any) -> None:
+    """Salva as configurações relevantes do session_state em disco."""
+    _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    data = get_wizard_config_snapshot(session_state)
 
     try:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:
@@ -98,22 +105,29 @@ def _reconstruct_mapping(cls: type, d: dict) -> Any:
         return None
 
 
+def apply_wizard_config_data(session_state: Any, data: dict, *, overwrite: bool = False) -> None:
+    """
+    Aplica um snapshot no session_state.
+    Quando overwrite=False, preserva valores ja definidos na sessao atual.
+    """
+    if not data:
+        return
+
+    for key in _CONFIG_KEYS + _WIDGET_KEYS:
+        if key in data and (overwrite or key not in session_state):
+            session_state[key] = data[key]
+
+    for key, cls in _MAPPING_KEYS.items():
+        if key in data and (overwrite or key not in session_state):
+            obj = _reconstruct_mapping(cls, data[key])
+            if obj is not None:
+                session_state[key] = obj
+
+
 def apply_wizard_config(session_state: Any) -> None:
     """
     Pré-preenche o session_state com a config salva.
     Só aplica chaves que ainda NÃO estão no session_state para não sobrescrever
     o que o usuário acabou de configurar na sessão atual.
     """
-    data = _load_raw()
-    if not data:
-        return
-
-    for key in _CONFIG_KEYS + _WIDGET_KEYS:
-        if key in data and key not in session_state:
-            session_state[key] = data[key]
-
-    for key, cls in _MAPPING_KEYS.items():
-        if key in data and key not in session_state:
-            obj = _reconstruct_mapping(cls, data[key])
-            if obj is not None:
-                session_state[key] = obj
+    apply_wizard_config_data(session_state, _load_raw(), overwrite=False)

@@ -12,7 +12,7 @@ from plan.client_store import (
     get_cliente_id, get_clientes_with_stats, list_clientes_display,
     create_cliente, rename_cliente, delete_cliente, update_cliente,
     import_clientes_bulk, get_kpis, get_user_activity,
-    export_database_backup, get_database_path, restore_database_backup,
+    export_database_backup, get_database_path, get_storage_health, restore_database_backup,
 )
 
 # ── Valores fixos para filtros categóricos ─────────────────────────────────────
@@ -103,6 +103,39 @@ def _show_backup_restore():
                 st.rerun()
             except Exception as e:
                 st.error(f"Erro ao restaurar backup: {e}")
+
+    st.divider()
+    st.subheader("Health check de produção")
+    try:
+        health = get_storage_health()
+        df_health = pd.DataFrame(health["checks"])
+        st.dataframe(
+            df_health,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "item": st.column_config.TextColumn("Verificação", width=220),
+                "status": st.column_config.TextColumn("Status", width=90),
+                "detalhe": st.column_config.TextColumn("Detalhe", width=420),
+            },
+        )
+        if any(c.get("status") == "ERRO" for c in health["checks"]):
+            st.error("Existe item crítico antes de publicar uma nova versão.")
+        elif any(c.get("status") == "ATENCAO" for c in health["checks"]):
+            st.warning("Ambiente funcional, mas ainda há risco de perda de dados se o disco for efêmero.")
+        else:
+            st.success("Sinais principais de produção estão OK.")
+    except Exception as e:
+        st.error(f"Não foi possível executar o health check: {e}")
+
+    st.markdown("**Rotina recomendada antes de atualizar versão**")
+    st.markdown(
+        "1. Baixar backup SQLite.\n"
+        "2. Confirmar health check sem erro.\n"
+        "3. Publicar a nova versão.\n"
+        "4. Abrir o app e validar login, De x Para e templates.\n"
+        "5. Restaurar backup somente se os dados não aparecerem."
+    )
 
 
 # ── Empresas ───────────────────────────────────────────────────────────────────
