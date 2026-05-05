@@ -6,6 +6,7 @@ import io
 import os
 import sqlite3
 import hashlib
+import tempfile
 from pathlib import Path
 from typing import Optional, List
 import datetime
@@ -21,7 +22,24 @@ try:
 except ImportError:
     _USE_BCRYPT = False
 
-DB_PATH = Path(__file__).parent.parent / "data" / "conciliador.db"
+_DEFAULT_DB_PATH = Path(__file__).parent.parent / "data" / "conciliador.db"
+
+
+def _configured_db_path() -> Path:
+    env_path = os.environ.get("CONCILIADOR_DB_PATH", "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    try:
+        import streamlit as st
+        secret_path = str(st.secrets.get("CONCILIADOR_DB_PATH", "")).strip()
+        if secret_path:
+            return Path(secret_path).expanduser()
+    except Exception:
+        pass
+    return _DEFAULT_DB_PATH
+
+
+DB_PATH = _configured_db_path()
 
 
 def _conn() -> sqlite3.Connection:
@@ -29,6 +47,63 @@ def _conn() -> sqlite3.Connection:
     con = sqlite3.connect(str(DB_PATH))
     con.row_factory = sqlite3.Row
     return con
+
+
+def get_database_path() -> str:
+    return str(DB_PATH)
+
+
+def export_database_backup() -> bytes:
+    """Gera um backup consistente do SQLite atual."""
+    init_db()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+        tmp_path = Path(tmp.name)
+    try:
+        with _conn() as src, sqlite3.connect(str(tmp_path)) as dst:
+            src.execute("PRAGMA wal_checkpoint(FULL)")
+            src.backup(dst)
+        return tmp_path.read_bytes()
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def restore_database_backup(data: bytes) -> None:
+    """Restaura um backup SQLite validado, substituindo o banco atual."""
+    global _db_initialized
+    if not data:
+        raise ValueError("Arquivo de backup vazio.")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".db") as tmp:
+        tmp.write(data)
+        tmp_path = Path(tmp.name)
+
+    try:
+        with sqlite3.connect(str(tmp_path)) as con:
+            tables = {
+                row[0]
+                for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+        required = {"clientes", "usuarios", "depara"}
+        missing = required - tables
+        if missing:
+            raise ValueError(
+                "Backup inválido. Tabelas ausentes: " + ", ".join(sorted(missing))
+            )
+
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        DB_PATH.write_bytes(tmp_path.read_bytes())
+        _db_initialized = False
+        init_db()
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _migrate(con: sqlite3.Connection):
@@ -818,5 +893,4 @@ def list_logs(
     with _conn() as con:
         rows = con.execute(query, params).fetchall()
     return [dict(r) for r in rows]
-
 

@@ -12,6 +12,7 @@ from plan.client_store import (
     get_cliente_id, get_clientes_with_stats, list_clientes_display,
     create_cliente, rename_cliente, delete_cliente, update_cliente,
     import_clientes_bulk, get_kpis, get_user_activity,
+    export_database_backup, get_database_path, restore_database_backup,
 )
 
 # ── Valores fixos para filtros categóricos ─────────────────────────────────────
@@ -28,12 +29,13 @@ def show_admin_panel():
     _show_kpi_banner()
     st.divider()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🏢 Empresas",
         "👤 Atividade por Usuário",
         "👥 Gestão de Usuários",
         "📋 Auditoria de Acessos",
         "📝 Histórico De x Para",
+        "💾 Backup",
     ])
     with tab1:
         _show_client_management()
@@ -45,6 +47,8 @@ def show_admin_panel():
         _show_audit_logs()
     with tab5:
         _show_depara_historico()
+    with tab6:
+        _show_backup_restore()
 
 
 # ── KPI banner ─────────────────────────────────────────────────────────────────
@@ -58,6 +62,47 @@ def _show_kpi_banner():
     c4.metric("📝 De x Para (7d)", kpis["depara_semana"])
     c5.metric("📊 Relatórios (30d)", kpis["relatorios_mes"])
     c6.metric("🔗 Total regras", kpis["total_depara"])
+
+
+def _show_backup_restore():
+    st.subheader("Backup e restauração do banco")
+    st.caption(f"Banco atual: `{get_database_path()}`")
+    st.warning(
+        "Em ambientes sem disco persistente, alterações feitas em usuários, senhas e De x Para "
+        "podem ser perdidas em reboot ou atualização. Baixe backups regularmente ou configure "
+        "`CONCILIADOR_DB_PATH` para um volume persistente."
+    )
+
+    col_export, col_import = st.columns(2)
+    with col_export:
+        st.markdown("**Exportar backup**")
+        try:
+            backup = export_database_backup()
+            st.download_button(
+                "Baixar backup SQLite",
+                backup,
+                file_name=f"conciliador_backup_{datetime.datetime.now():%Y%m%d_%H%M%S}.db",
+                mime="application/octet-stream",
+                key="db_backup_download",
+            )
+        except Exception as e:
+            st.error(f"Não foi possível gerar backup: {e}")
+
+    with col_import:
+        st.markdown("**Restaurar backup**")
+        up = st.file_uploader("Arquivo .db de backup", type=["db", "sqlite"], key="db_restore_file")
+        confirmar = st.checkbox(
+            "Confirmo que a restauração substituirá usuários, senhas, empresas, De x Para e logs atuais.",
+            key="db_restore_confirm",
+        )
+        if st.button("Restaurar backup", type="primary", disabled=not (up and confirmar), key="db_restore_btn"):
+            try:
+                restore_database_backup(up.read())
+                log_acao(st.session_state.get("usuario_email", "desconhecido"), "BACKUP_RESTAURADO", "")
+                st.success("Backup restaurado. O app será recarregado.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Erro ao restaurar backup: {e}")
 
 
 # ── Empresas ───────────────────────────────────────────────────────────────────
