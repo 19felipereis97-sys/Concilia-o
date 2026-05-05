@@ -11,6 +11,7 @@ from core.mapping import (
     ValorModalidade, FinanceiroModalidade,
 )
 from core.params import ConciliacaoParams
+from core.wizard_persistence import save_wizard_config
 
 
 @st.cache_data(show_spinner=False)
@@ -265,4 +266,5 @@ def step_params() -> ConciliacaoParams:
         enable_n_to_one=True,
     )
     st.session_state["params"] = params
+    save_wizard_config(st.session_state)
     return params

@@ -43,8 +43,14 @@ from ui.wizard_review import step_review
 from ui.components import progress_bar
 from ui.login import show_login, show_change_password_required
 from ui.admin import show_admin_panel
+from core.wizard_persistence import apply_wizard_config
 
 init_db()
+
+# Pré-preenche session_state com a config salva (apenas uma vez por sessão)
+if "_wizard_config_loaded" not in st.session_state:
+    apply_wizard_config(st.session_state)
+    st.session_state["_wizard_config_loaded"] = True
 
 # ── Normalização incremental ───────────────────────────────────────────────────
 

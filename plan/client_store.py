@@ -3,12 +3,17 @@ Persistência SQLite: clientes, usuários, De-Para contábil e logs de auditoria
 """
 from __future__ import annotations
 import io
+import os
 import sqlite3
 import hashlib
 from pathlib import Path
 from typing import Optional, List
 import datetime
 import pandas as pd
+
+# Garante que _seed_default_admin() seja executado apenas uma vez por processo
+# (Streamlit reexecuta o script a cada interação, mas o processo Python persiste)
+_db_initialized = False
 
 try:
     import bcrypt
@@ -86,6 +91,7 @@ def _migrate(con: sqlite3.Connection):
 
 
 def init_db():
+    global _db_initialized
     with _conn() as con:
         con.executescript("""
         CREATE TABLE IF NOT EXISTS clientes (
@@ -137,18 +143,27 @@ def init_db():
         );
         """)
         _migrate(con)
-    _seed_default_admin()
+    if not _db_initialized:
+        _seed_default_admin()
+        _db_initialized = True
 
 
 def _seed_default_admin():
-    """Cria o admin padrão se ainda não existir."""
+    """Cria o admin padrão se não existir; atualiza a senha se ADMIN_PASSWORD estiver definida."""
     email = "felipe.r@jcacontadores.com.br"
+    env_pw = os.environ.get("ADMIN_PASSWORD", "").strip()
     with _conn() as con:
         row = con.execute("SELECT id FROM usuarios WHERE email=?", (email,)).fetchone()
         if row is None:
             con.execute(
                 "INSERT INTO usuarios (email, senha_hash, perfil, criado_em) VALUES (?, ?, ?, ?)",
-                (email, _hash_pw("123456"), "admin", datetime.datetime.now().isoformat()),
+                (email, _hash_pw(env_pw or "123456"), "admin", datetime.datetime.now().isoformat()),
+            )
+        elif env_pw:
+            # Se ADMIN_PASSWORD estiver configurada no ambiente, prevalece sobre o DB commitado
+            con.execute(
+                "UPDATE usuarios SET senha_hash=?, troca_senha_obrigatoria=0 WHERE email=?",
+                (_hash_pw(env_pw), email),
             )
 
 
