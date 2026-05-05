@@ -80,8 +80,18 @@ def run_engine(
         df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=var_offsets)
 
     # ── Passo 5: N:1 D0 (N extratos = 1 financeiro, mesmo dia) ─────────────────
+    # Executa em loop até convergência: entre iterações recoloca entradas REVISAR
+    # de volta a STATUS_SEM_PAREAMENTO para que possam ser reconsideradas quando
+    # outras combinações ambíguas já foram resolvidas.
     if params.enable_n_to_one:
-        df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params)
+        for _ in range(10):
+            _n1_rev = (df_bnk["_status"] == STATUS_REVISAR) & df_bnk["_metodo"].str.startswith("N:1", na=False)
+            df_bnk.loc[_n1_rev, "_status"] = STATUS_SEM_PAREAMENTO
+            df_bnk.loc[_n1_rev, "_metodo"] = ""
+            _prev = int((df_fin["_status"] == STATUS_CONCILIADO).sum())
+            df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params)
+            if int((df_fin["_status"] == STATUS_CONCILIADO).sum()) == _prev:
+                break
 
     # ── Passo 6: 1:N D0 parcial (maior somatório ≤ extrato, mesmo dia) ───────
     df_bnk, df_fin, pending_rows = match_partial_one_to_n(df_bnk, df_fin, params)
@@ -103,7 +113,14 @@ def run_engine(
 
     # ── Passo 7: N:1 D0 — segunda passagem (após parcial) ────────────────────
     if params.enable_n_to_one:
-        df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params,
-                                         extra_bnk_statuses=[STATUS_PENDENTE_PARCIAL])
+        for _ in range(10):
+            _n1_rev = (df_bnk["_status"] == STATUS_REVISAR) & df_bnk["_metodo"].str.startswith("N:1", na=False)
+            df_bnk.loc[_n1_rev, "_status"] = STATUS_SEM_PAREAMENTO
+            df_bnk.loc[_n1_rev, "_metodo"] = ""
+            _prev = int((df_fin["_status"] == STATUS_CONCILIADO).sum())
+            df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params,
+                                             extra_bnk_statuses=[STATUS_PENDENTE_PARCIAL])
+            if int((df_fin["_status"] == STATUS_CONCILIADO).sum()) == _prev:
+                break
 
     return df_bnk, df_fin

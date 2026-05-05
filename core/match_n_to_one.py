@@ -60,7 +60,23 @@ def match_n_to_one(
 
     fin_free_df = df_fin[df_fin["_status"] == STATUS_IGNORADO_SEM_PAR]
     fin_cols = ["_id", "_data", "_valor", "_valor_f"] if "_valor_f" in df_fin.columns else ["_id", "_data", "_valor"]
+
+    # Pré-calcula número de candidatos por linha financeira e ordena ascendente.
+    # Linhas com menos candidatos (mais restritas) são processadas primeiro, evitando
+    # que linhas com muitas combinações "roubem" lançamentos bancários de correspondências únicas.
+    fin_records: list = []
     for fi, row_f in zip(fin_free_df.index, fin_free_df[fin_cols].to_dict("records")):
+        _tf = row_f.get("_valor_f", float(row_f["_valor"]))
+        _sign = _tf > 0
+        _abs = abs(_tf)
+        n_cands = sum(
+            1 for c in bnk_groups.get((row_f["_data"], _sign), [])
+            if c["_id"] in free_bnk and abs(c["_valor_f"]) <= _abs + tol
+        )
+        fin_records.append((fi, row_f, n_cands))
+    fin_records.sort(key=lambda x: x[2])
+
+    for fi, row_f, _ in fin_records:
         target_f = row_f.get("_valor_f", float(row_f["_valor"]))
         sign = target_f > 0
         abs_target = abs(target_f)
