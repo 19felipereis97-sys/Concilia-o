@@ -15,6 +15,7 @@ def limit_subset_candidates(
     target_f: float,
     max_candidates: int,
     value_key: str = "_valor_f",
+    max_group_size: int = 2,
 ) -> tuple[list[dict[str, Any]], bool]:
     """
     Retorna uma lista priorizada de candidatos para subset-sum.
@@ -28,10 +29,13 @@ def limit_subset_candidates(
 
     abs_target = abs(float(target_f))
 
+    group_sizes = range(1, max(int(max_group_size or 2), 2) + 1)
+
     def score(candidate: dict[str, Any]) -> tuple[float, float, str]:
         value = abs(float(candidate.get(value_key, 0) or 0))
+        best_group_distance = min(abs(abs_target / k - value) for k in group_sizes)
         return (
-            abs(abs_target - value),
+            best_group_distance,
             -value,
             str(candidate.get("_id", "")),
         )

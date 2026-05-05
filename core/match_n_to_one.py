@@ -43,6 +43,7 @@ def match_n_to_one(
     """
     tol = float(params.value_tolerance_cents) / 100
     use_deadline = params.combo_timeout_sec > 0
+    max_candidates = int(getattr(params, "n_to_one_max_candidates", 10) or 0)
 
     _free_statuses = {STATUS_SEM_PAREAMENTO, *(extra_bnk_statuses or [])}
 
@@ -97,16 +98,25 @@ def match_n_to_one(
         candidatos_busca, limited = limit_subset_candidates(
             candidatos,
             target_f,
-            int(getattr(params, "max_candidates_per_group", 0) or 0),
+            max_candidates,
+            max_group_size=params.max_group_size,
         )
         if len(candidatos_busca) < 2:
             continue
 
         vals = [c["_valor_f"] for c in candidatos_busca]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None
+        search_start = time.monotonic()
         matches = find_combos(vals, target_f, tol, params.max_group_size, deadline=deadline)
+        timed_out = use_deadline and (time.monotonic() - search_start) >= (params.combo_timeout_sec * 0.95)
 
         if not matches:
+            if limited or timed_out:
+                motivo = "tempo esgotado" if timed_out else "grupo limitado"
+                for c in candidatos_busca:
+                    bi = bnk_pos[c["_id"]]
+                    if df_bnk.at[bi, "_status"] in _free_statuses:
+                        df_bnk.at[bi, "_metodo"] = f"N:1 {motivo}"
             continue
 
         if len(matches) == 1:
@@ -135,6 +145,6 @@ def match_n_to_one(
                     bi = bnk_pos[rid]
                     if df_bnk.at[bi, "_status"] in _free_statuses:
                         df_bnk.at[bi, "_status"] = STATUS_REVISAR
-                        df_bnk.at[bi, "_metodo"] = "N:1 grupo limitado" if limited else "N:1 ambiguo"
+                        df_bnk.at[bi, "_metodo"] = "N:1 ambiguo"
 
     return df_bnk, df_fin

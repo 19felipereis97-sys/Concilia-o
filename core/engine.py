@@ -15,6 +15,8 @@ Ordem de execução (extrato → financeiro):
 """
 from __future__ import annotations
 
+from typing import Callable
+
 import pandas as pd
 
 from .normalize import (
@@ -43,12 +45,17 @@ def run_engine(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
+    progress: Callable[[str, int], None] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Executa o pipeline completo de conciliação e retorna (df_bnk, df_fin).
     df_bnk pode conter linhas extras (PND_*) representando pendências parciais.
     """
     clear_cache()
+
+    def _progress(message: str, pct: int) -> None:
+        if progress:
+            progress(message, pct)
 
     # Garante colunas de controle
     for col, default in [("_status", STATUS_SEM_PAREAMENTO), ("_metodo", ""), ("_ids_fin", "")]:
@@ -63,13 +70,16 @@ def run_engine(
     df_fin["_status"] = pd.Categorical(df_fin["_status"], categories=_ALL_STATUSES)
 
     # ── Passo 1: 1:1 D0 ──────────────────────────────────────────────────────
+    _progress("1:1 D0 - pareamento exato no mesmo dia.", 20)
     df_bnk, df_fin, pairs_d0 = match_one_to_one(df_bnk, df_fin, params, offsets=[0])
     df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_d0, params)
 
     # ── Passo 2: 1:N D0 (fechamento total) ───────────────────────────────────
+    _progress("1:N D0 - somas de financeiros no mesmo dia.", 32)
     df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=[0])
 
     # ── Passo 3: 1:1 D± (cascata D-1 > D+1 > D-2 > D+2) ────────────────────
+    _progress("1:1 D+/- - pareamento exato com variacao de data.", 44)
     var_offsets = [k for k in params.date_offsets if k != 0]
     if var_offsets:
         df_bnk, df_fin, pairs_var = match_one_to_one(df_bnk, df_fin, params, offsets=var_offsets)
@@ -77,12 +87,14 @@ def run_engine(
 
     # ── Passo 4: 1:N D± (fechamento total, candidatos de datas distintas) ────
     if var_offsets:
+        _progress("1:N D+/- - somas com variacao de data.", 56)
         df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=var_offsets)
 
     # ── Passo 5: N:1 D0 (N extratos = 1 financeiro, mesmo dia) ─────────────────
     # Executa em loop até convergência: entre iterações recoloca entradas REVISAR
     # de volta a STATUS_SEM_PAREAMENTO para que possam ser reconsideradas quando
     # outras combinações ambíguas já foram resolvidas.
+    _progress("N:1 D0 - somas de extratos para um financeiro.", 68)
     if params.enable_n_to_one:
         for _ in range(10):
             _n1_rev = (df_bnk["_status"] == STATUS_REVISAR) & df_bnk["_metodo"].str.startswith("N:1", na=False)
@@ -94,6 +106,7 @@ def run_engine(
                 break
 
     # ── Passo 6: 1:N D0 parcial (maior somatório ≤ extrato, mesmo dia) ───────
+    _progress("Parcial 1:N - maior soma possivel sem ultrapassar.", 80)
     df_bnk, df_fin, pending_rows = match_partial_one_to_n(df_bnk, df_fin, params)
 
     if pending_rows:
@@ -105,6 +118,7 @@ def run_engine(
         df_bnk = pd.concat([df_bnk, pending_df[df_bnk.columns]], ignore_index=True)
 
     # ── Passo 6.5: 1:1 D0 — segunda passagem (lançamentos remanescentes) ────────
+    _progress("1:1 D0 - segunda passagem em remanescentes.", 88)
     df_bnk, df_fin, pairs_post = match_one_to_one(
         df_bnk, df_fin, params, offsets=[0],
         extra_bnk_statuses=[STATUS_PENDENTE_PARCIAL],
@@ -112,6 +126,7 @@ def run_engine(
     df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_post, params)
 
     # ── Passo 7: N:1 D0 — segunda passagem (após parcial) ────────────────────
+    _progress("N:1 D0 - segunda passagem apos parcial.", 94)
     if params.enable_n_to_one:
         for _ in range(10):
             _n1_rev = (df_bnk["_status"] == STATUS_REVISAR) & df_bnk["_metodo"].str.startswith("N:1", na=False)
@@ -123,4 +138,5 @@ def run_engine(
             if int((df_fin["_status"] == STATUS_CONCILIADO).sum()) == _prev:
                 break
 
+    _progress("Motor concluido.", 96)
     return df_bnk, df_fin

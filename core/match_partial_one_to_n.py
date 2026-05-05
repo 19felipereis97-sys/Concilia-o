@@ -89,6 +89,7 @@ def match_partial_one_to_n(
             candidatos,
             target_f,
             int(getattr(params, "max_candidates_per_group", 0) or 0),
+            max_group_size=params.max_group_size,
         )
         if not candidatos_busca:
             continue

@@ -56,7 +56,7 @@ def step_mapping_extrato() -> bool:
     hist_cols = st.multiselect("Colunas de HISTÓRICO (podem ser várias)", cols, key="bnk_col_hist")
     valor_mod = st.radio(
         "Formato do valor",
-        ["Coluna única (com sinal ou positivo=crédito)", "Duas colunas (débito e crédito)"],
+        ["Coluna única (com sinal)", "Duas colunas (pagamentos e recebimentos)"],
         key="bnk_valor_mod",
     )
 
@@ -64,8 +64,8 @@ def step_mapping_extrato() -> bool:
     if valor_mod.startswith("Coluna única"):
         col_valor = st.selectbox("Coluna de VALOR", opcoes, key="bnk_col_valor")
     else:
-        col_deb = st.selectbox("Coluna de DÉBITO", opcoes, key="bnk_col_deb")
-        col_cre = st.selectbox("Coluna de CRÉDITO", opcoes, key="bnk_col_cre")
+        col_deb = st.selectbox("Coluna de PAGAMENTOS / SAÍDAS (será negativo)", opcoes, key="bnk_col_deb")
+        col_cre = st.selectbox("Coluna de RECEBIMENTOS / ENTRADAS (será positivo)", opcoes, key="bnk_col_cre")
 
     if col_data == "(não mapeado)" or not hist_cols:
         st.info("Selecione ao menos a coluna de data e uma coluna de histórico para continuar.")
@@ -76,7 +76,7 @@ def step_mapping_extrato() -> bool:
     if not valor_mod.startswith("Coluna única") and (
         col_deb == "(não mapeado)" or col_cre == "(não mapeado)"
     ):
-        st.info("Selecione as colunas de débito e crédito para continuar.")
+        st.info("Selecione as colunas de pagamentos/saídas e recebimentos/entradas para continuar.")
         return False
 
     mod = ValorModalidade.COLUNA_UNICA if valor_mod.startswith("Coluna única") else ValorModalidade.DOIS_COLUNAS
@@ -118,15 +118,15 @@ def _build_fin_mapping_ui(
 
     valor_mod = st.radio(
         "Formato do valor",
-        ["Coluna única", "Duas colunas (débito e crédito)"],
+        ["Coluna única", "Duas colunas (pagamentos e recebimentos)"],
         key=f"{prefix}valor_mod",
     )
     col_valor = col_deb = col_cre = None
     if valor_mod == "Coluna única":
         col_valor = st.selectbox("Coluna de VALOR", opcoes, key=f"{prefix}col_valor")
     else:
-        col_deb = st.selectbox("Coluna de DÉBITO", opcoes, key=f"{prefix}col_deb")
-        col_cre = st.selectbox("Coluna de CRÉDITO", opcoes, key=f"{prefix}col_cre")
+        col_deb = st.selectbox("Coluna de PAGAMENTOS / SAÍDAS (será negativo)", opcoes, key=f"{prefix}col_deb")
+        col_cre = st.selectbox("Coluna de RECEBIMENTOS / ENTRADAS (será positivo)", opcoes, key=f"{prefix}col_cre")
 
     col_classif = st.selectbox("Coluna de CLASSIFICAÇÃO CONTÁBIL (opcional)", opcoes, key=f"{prefix}col_classif")
 
@@ -139,7 +139,7 @@ def _build_fin_mapping_ui(
     if valor_mod != "Coluna única" and (
         col_deb == "(não mapeado)" or col_cre == "(não mapeado)"
     ):
-        st.info("Selecione as colunas de débito e crédito para continuar.")
+        st.info("Selecione as colunas de pagamentos/saídas e recebimentos/entradas para continuar.")
         return False
 
     mod = ValorModalidade.COLUNA_UNICA if valor_mod == "Coluna única" else ValorModalidade.DOIS_COLUNAS
@@ -221,9 +221,14 @@ def step_params() -> ConciliacaoParams:
             min_value=2, max_value=30, value=30, key="param_group",
             help="Máximo de lançamentos financeiros que podem se combinar num único pareamento.",
         )
+        max_candidates = st.number_input(
+            "Candidatos maximos por grupo (1:N)",
+            min_value=2, max_value=40, value=40, key="param_max_candidates",
+            help="Limite de candidatos avaliados em cada busca 1:N. Reduza para acelerar bases grandes.",
+        )
         combo_timeout = st.number_input(
             "Tempo máximo por busca combinatória (s)",
-            min_value=0.0, max_value=60.0, value=3.0, step=0.5, key="param_combo_timeout",
+            min_value=0.0, max_value=60.0, value=1.0, step=0.5, key="param_combo_timeout",
             help="Use 0 para não interromper a busca por tempo.",
         )
         offsets_str = st.text_input(
@@ -256,7 +261,7 @@ def step_params() -> ConciliacaoParams:
     params = ConciliacaoParams(
         date_offsets=offsets,
         max_group_size=int(max_group),
-        max_candidates_per_group=0,
+        max_candidates_per_group=int(max_candidates),
         value_tolerance_cents=int(tol),
         combo_timeout_sec=float(combo_timeout),
         discard_patterns=patterns,

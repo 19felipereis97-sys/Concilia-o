@@ -101,18 +101,21 @@ def match_one_to_n(
             candidatos,
             target_f,
             int(getattr(params, "max_candidates_per_group", 0) or 0),
+            max_group_size=params.max_group_size,
         )
         if len(candidatos_busca) < 2:
             continue
 
         vals = [c["_valor_f"] for c in candidatos_busca]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None
+        search_start = time.monotonic()
         matches = find_combos(vals, target_f, tol, params.max_group_size, deadline=deadline)
+        timed_out = use_deadline and (time.monotonic() - search_start) >= (params.combo_timeout_sec * 0.95)
 
         if not matches:
-            if limited and not is_d0_only and df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
-                df_bnk.at[bi, "_status"] = STATUS_REVISAR
-                df_bnk.at[bi, "_metodo"] = f"{label_base} grupo grande ({len(candidatos)} candidatos)"
+            if (limited or timed_out) and df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
+                motivo = "tempo esgotado" if timed_out else "grupo grande"
+                df_bnk.at[bi, "_metodo"] = f"{label_base} {motivo} ({len(candidatos)} candidatos)"
             continue
 
         if len(matches) == 1:
@@ -133,7 +136,6 @@ def match_one_to_n(
         else:
             if df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
                 df_bnk.at[bi, "_status"] = STATUS_REVISAR
-                sufixo = " grupo limitado" if limited else " ambiguo"
-                df_bnk.at[bi, "_metodo"] = f"{label_base}{sufixo}"
+                df_bnk.at[bi, "_metodo"] = f"{label_base} ambiguo"
 
     return df_bnk, df_fin

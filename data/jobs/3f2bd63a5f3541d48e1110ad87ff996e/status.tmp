@@ -1,0 +1,6 @@
+{
+  "job_id": "3f2bd63a5f3541d48e1110ad87ff996e",
+  "status": "error",
+  "message": "[WinError 5] Acesso negado: 'C:\\\\Users\\\\felipe.r\\\\Desktop\\\\Conciliação\\\\data\\\\jobs\\\\3f2bd63a5f3541d48e1110ad87ff996e\\\\status.tmp' -> 'C:\\\\Users\\\\felipe.r\\\\Desktop\\\\Conciliação\\\\data\\\\jobs\\\\3f2bd63a5f3541d48e1110ad87ff996e\\\\status.json'",
+  "updated_at": 1778009443.7026637
+}

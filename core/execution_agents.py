@@ -80,9 +80,9 @@ def parameter_agent(df_bnk: pd.DataFrame, df_fin: pd.DataFrame, params: Any) -> 
         findings.append(_finding(
             "Sugestão de Parâmetros", "info", "Base grande detectada",
             f"{total_bnk} linha(s) no banco e {total_fin} no financeiro. "
-            "A busca combinatória está sem corte por candidatos para preservar assertividade.",
+            f"A busca 1:N está limitada a {max_candidates or 'sem limite'} candidato(s) por grupo.",
         ))
-    if max_group >= 20 and max_candidates > 80:
+    if max_group >= 20 and (max_candidates == 0 or max_candidates > 40):
         findings.append(_finding(
             "Sugestão de Parâmetros", "atenção", "Busca combinatória ampla",
             f"Grupo máximo {max_group} com {max_candidates} candidatos pode ficar pesado. "

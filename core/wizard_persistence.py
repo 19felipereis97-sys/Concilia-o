@@ -43,7 +43,7 @@ _WIDGET_KEYS: list[str] = [
     "pag_col_data", "pag_col_hist", "pag_hist_prefix", "pag_hist_sep",
     "pag_valor_mod", "pag_col_valor", "pag_col_deb", "pag_col_cre", "pag_col_classif",
     # parâmetros de conciliação
-    "param_tol", "param_group", "param_combo_timeout",
+    "param_tol", "param_group", "param_max_candidates", "param_combo_timeout",
     "param_offsets", "param_discard",
 ]
 

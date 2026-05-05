@@ -94,6 +94,107 @@ def test_t04_n_para_1_sispag():
     assert f.iloc[0]["_status"] == "CONCILIADO"
 
 
+def test_t04b_n_para_1_nao_reusa_banco_ja_conciliado():
+    """N:1 deve considerar somente linhas bancarias ainda livres."""
+    from core.match_n_to_one import match_n_to_one
+    from core.params import ConciliacaoParams
+
+    b1 = _bnk("B1", "2024-01-15", "-50.00")
+    b1["_status"] = "CONCILIADO"
+    b1["_ids_fin"] = "F_ANTERIOR"
+    df_b = pd.DataFrame([b1, _bnk("B2", "2024-01-15", "-50.00")])
+    df_f = pd.DataFrame([_fin("F1", "2024-01-15", "-100.00")])
+
+    b, f = match_n_to_one(df_b, df_f, ConciliacaoParams())
+
+    assert b[b["_id"] == "B1"].iloc[0]["_status"] == "CONCILIADO"
+    assert b[b["_id"] == "B2"].iloc[0]["_status"] == "SEM_PAREAMENTO"
+    assert f.iloc[0]["_status"] == "IGNORADO_SEM_CONTRAPARTIDA"
+
+
+def test_t04c_n_para_1_limita_dez_candidatos():
+    """N:1 deve limitar a busca combinatoria a 10 candidatos por financeiro."""
+    from core.match_n_to_one import match_n_to_one
+    from core.params import ConciliacaoParams
+
+    bnk_rows = [_bnk("B90", "2024-01-15", "-90.00")]
+    bnk_rows.extend(_bnk(f"B{i:02d}", "2024-01-15", "-1.00") for i in range(1, 11))
+    fin_rows = [_fin("F1", "2024-01-15", "-100.00")]
+
+    df_b = pd.DataFrame(bnk_rows)
+    df_f = pd.DataFrame(fin_rows)
+    b, f = match_n_to_one(df_b, df_f, ConciliacaoParams(n_to_one_max_candidates=10))
+
+    assert "REVISAR" not in set(b["_status"])
+    assert f.iloc[0]["_status"] == "IGNORADO_SEM_CONTRAPARTIDA"
+
+    df_b_sem_limite = pd.DataFrame(bnk_rows)
+    df_f_sem_limite = pd.DataFrame(fin_rows)
+    b2, f2 = match_n_to_one(
+        df_b_sem_limite,
+        df_f_sem_limite,
+        ConciliacaoParams(n_to_one_max_candidates=0),
+    )
+
+    assert f2.iloc[0]["_status"] == "CONCILIADO"
+    assert int((b2["_status"] == "CONCILIADO").sum()) == 11
+
+
+def test_t04c2_n_para_1_concilia_cinco_para_um_com_limite():
+    """N:1 deve encontrar 5:1 sem depender de historico, apenas data e valor."""
+    from core.match_n_to_one import match_n_to_one
+    from core.params import ConciliacaoParams
+
+    bnk_rows = [_bnk(f"B{i}", "2024-01-15", "-20.00") for i in range(1, 6)]
+    bnk_rows.extend(_bnk(f"D{i}", "2024-01-15", "-1.00") for i in range(1, 20))
+    df_b = pd.DataFrame(bnk_rows)
+    df_f = pd.DataFrame([_fin("F1", "2024-01-15", "-100.00")])
+
+    b, f = match_n_to_one(
+        df_b,
+        df_f,
+        ConciliacaoParams(max_group_size=6, n_to_one_max_candidates=10),
+    )
+
+    assert f.iloc[0]["_status"] == "CONCILIADO"
+    assert int((b["_status"] == "CONCILIADO").sum()) == 5
+    assert set(b.loc[b["_status"] == "CONCILIADO", "_id"]) == {"B1", "B2", "B3", "B4", "B5"}
+
+
+def test_t04d_escopo_pagamentos_tira_recebimentos_do_confronto():
+    """Quando financeiro e so pagamentos, entradas do banco ficam conciliadas fora do confronto."""
+    from core.scope import apply_financeiro_scope
+
+    df_b = pd.DataFrame([
+        _bnk("B_PAG", "2024-01-15", "-50.00"),
+        _bnk("B_REC", "2024-01-15", "100.00"),
+    ])
+
+    b, qtd = apply_financeiro_scope(df_b, "PAGAMENTOS")
+
+    assert qtd == 1
+    assert b[b["_id"] == "B_REC"].iloc[0]["_status"] == "CONCILIADO"
+    assert b[b["_id"] == "B_REC"].iloc[0]["_metodo"] == "fora_confronto_recebimento"
+    assert b[b["_id"] == "B_PAG"].iloc[0]["_status"] == "SEM_PAREAMENTO"
+
+
+def test_t04e_escopo_recebimentos_tira_pagamentos_do_confronto():
+    """Quando financeiro e so recebimentos, saidas do banco ficam conciliadas fora do confronto."""
+    from core.scope import apply_financeiro_scope
+
+    df_b = pd.DataFrame([
+        _bnk("B_PAG", "2024-01-15", "-50.00"),
+        _bnk("B_REC", "2024-01-15", "100.00"),
+    ])
+
+    b, qtd = apply_financeiro_scope(df_b, "RECEBIMENTOS")
+
+    assert qtd == 1
+    assert b[b["_id"] == "B_PAG"].iloc[0]["_status"] == "CONCILIADO"
+    assert b[b["_id"] == "B_PAG"].iloc[0]["_metodo"] == "fora_confronto_pagamento"
+    assert b[b["_id"] == "B_REC"].iloc[0]["_status"] == "SEM_PAREAMENTO"
+
+
 def test_t05_1_para_n():
     """1:N — um bancário = soma de dois financeiros."""
     b, f = _run(
@@ -162,7 +263,30 @@ def test_t10_parse_date_formatos():
     assert _parse_date("10/01/2024") == datetime.date(2024, 1, 10)
     assert _parse_date("2024-01-10") == datetime.date(2024, 1, 10)
     assert _parse_date("10.01.2024") == datetime.date(2024, 1, 10)
+    assert _parse_date("10/01/2024 15:45:00") == datetime.date(2024, 1, 10)
+    assert _parse_date("2024-01-10T15:45:00") == datetime.date(2024, 1, 10)
+    assert _parse_date("10-01", default_year=2025) == datetime.date(2025, 1, 10)
+    assert _parse_date("45292") == datetime.date(2024, 1, 1)
     assert _parse_date("") is None
+
+
+def test_t10b_normalizacao_converte_data_texto_para_date():
+    """Datas em texto devem virar datetime.date antes do motor."""
+    from core.normalize import normalize_extrato
+    from core.mapping import ExtratoMapping, ValorModalidade
+    from core.params import ConciliacaoParams
+
+    buf = _make_xlsx(
+        [{"Data": "10/01/2024 15:45:00", "Hist": "PIX", "Valor": "-200"}],
+        ["Data", "Hist", "Valor"],
+    )
+    mapping = ExtratoMapping(
+        col_data="Data", col_historico=["Hist"],
+        valor_modalidade=ValorModalidade.COLUNA_UNICA, col_valor="Valor",
+    )
+    df = normalize_extrato(buf, mapping, ConciliacaoParams(), suffix=".xlsx")
+
+    assert df.iloc[0]["_data"] == datetime.date(2024, 1, 10)
 
 
 def test_t11_relatorio_vazio():
@@ -276,7 +400,7 @@ def test_t17_pagamentos_casam_com_debitos_banco():
 
 
 def test_t12_dois_colunas_debito_credito():
-    """Extrato com colunas separadas de débito e crédito."""
+    """Extrato com colunas separadas: pagamentos negativos e recebimentos positivos."""
     from core.normalize import normalize_extrato
     from core.mapping import ExtratoMapping, ValorModalidade
     from core.params import ConciliacaoParams
@@ -296,7 +420,30 @@ def test_t12_dois_colunas_debito_credito():
     # SDO FINAL zerado é descartado, PAGTO e RECEBTO mantidos
     assert len(df) == 2
     valores = sorted([float(r["_valor"]) for _, r in df.iterrows()])
-    assert valores == [-300.0, 500.0]
+    assert valores == [-500.0, 300.0]
+
+
+def test_t12b_financeiro_dois_colunas_pagamento_negativo_recebimento_positivo():
+    """Financeiro com duas colunas deve manter pagamentos negativos e recebimentos positivos."""
+    from core.normalize import normalize_financeiro
+    from core.mapping import FinanceiroMapping, ValorModalidade
+    from core.params import ConciliacaoParams
+
+    buf = _make_xlsx(
+        [{"Data": "15/01/2024", "Hist": "PGTO", "Pag": "500", "Rec": ""},
+         {"Data": "15/01/2024", "Hist": "REC",  "Pag": "",    "Rec": "300"}],
+        ["Data", "Hist", "Pag", "Rec"],
+    )
+    mapping = FinanceiroMapping(
+        col_data="Data", col_historico=["Hist"],
+        valor_modalidade=ValorModalidade.DOIS_COLUNAS,
+        col_debito="Pag", col_credito="Rec",
+    )
+    df = normalize_financeiro(buf, mapping, ConciliacaoParams(), suffix=".xlsx")
+
+    by_hist = {row["_historico"]: float(row["_valor"]) for _, row in df.iterrows()}
+    assert by_hist["PGTO"] == -500.0
+    assert by_hist["REC"] == 300.0
 
 
 def test_t18_depara_indexado_equivale_ao_fluxo_original():

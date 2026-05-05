@@ -27,10 +27,14 @@ from plan.client_store import (
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
 from core.normalize import normalize_extrato, normalize_financeiro
-from core.engine import run_engine
-from core.execution_agents import supervisor_agent
-from core.manual_review import build_review_queue, apply_review_decisions
+from core.manual_review import apply_review_decisions
 from core.report_builder import build_report
+from core.background_jobs import (
+    cancel_job,
+    load_result,
+    read_status,
+    start_conciliation_job,
+)
 from ui.wizard_upload import (
     step_upload_extrato, step_upload_financeiro,
     step_header_config_extrato, step_header_config_financeiro,
@@ -493,8 +497,10 @@ def wizard_page():
         if df_fin_ready is not None and not df_fin_ready.empty:
             st.success(f"Financeiro: {len(df_fin_ready)} movimentos prontos.")
         step_params()
-        if st.button("Executar conciliação", key="wiz_7_run", type="primary"):
-            _executar_conciliacao()
+        if st.session_state.get("conciliation_job_id"):
+            _render_conciliation_job()
+        elif st.button("Executar conciliação", key="wiz_7_run", type="primary"):
+            _iniciar_conciliacao_job()
 
     elif step == 8:
         _etapa_revisao_download()
@@ -520,15 +526,18 @@ def _compute_balance_warning(df_bnk: pd.DataFrame, df_fin: pd.DataFrame, modalid
     return resultado
 
 
-def _executar_conciliacao():
-    with st.spinner("Executando conciliação..."):
+def _iniciar_conciliacao_job():
+    with st.spinner("Preparando conciliação em segundo plano..."):
         try:
             params = st.session_state["params"]
             modalidade_str = st.session_state.get("fin_modalidade_str", "COMPLETO")
+            status_box = st.empty()
 
             # Re-normaliza apenas se discard_patterns ou default_year mudaram
             # desde a normalização incremental feita nas etapas 5 e 6.
+            status_box.info("Checkpoint: normalização do extrato.")
             _normalizar_extrato_incremental(params)
+            status_box.info("Checkpoint: normalização do financeiro.")
             _normalizar_financeiro_incremental(params)
 
             df_bnk = st.session_state.get("df_bnk", pd.DataFrame())
@@ -538,38 +547,74 @@ def _executar_conciliacao():
                 st.error("Dados não normalizados. Volte e verifique os mapeamentos.")
                 return
 
-            t0 = time.perf_counter()
-            st.session_state["balance_warning"] = _compute_balance_warning(df_bnk, df_fin, modalidade_str)
-            _perf_add("Análise de saldos", t0)
+            job_id = start_conciliation_job(df_bnk, df_fin, params, modalidade_str)
+            st.session_state["conciliation_job_id"] = job_id
+            st.session_state["performance_timings"] = []
+            status_box.info("Checkpoint: job iniciado em segundo plano.")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao iniciar a conciliação em segundo plano: {e}")
 
-            t0 = time.perf_counter()
-            df_bnk, df_fin = run_engine(df_bnk, df_fin, params)
-            _perf_add("Motor de conciliação", t0, f"{len(df_bnk)} banco / {len(df_fin)} financeiro")
-            st.session_state["df_bnk"] = df_bnk
-            st.session_state["df_fin"] = df_fin
 
-            t0 = time.perf_counter()
-            cards = build_review_queue(df_bnk, df_fin, params)
-            _perf_add("Fila de revisão", t0, f"{len(cards)} card(s)")
-            st.session_state["review_cards"] = cards
-            st.session_state["agent_report"] = supervisor_agent(
-                df_bnk,
-                df_fin,
-                params,
-                st.session_state.get("performance_timings", []),
-            )
+def _render_conciliation_job():
+    job_id = st.session_state.get("conciliation_job_id")
+    if not job_id:
+        return
+
+    status = read_status(job_id)
+    state = status.get("status", "")
+    message = status.get("message", "")
+
+    if state in {"queued", "running"}:
+        st.info(message or "Conciliação em andamento.")
+        progress_value = int(status.get("progress", 0) or 0)
+        st.progress(min(max(progress_value, 0), 100), text=f"{progress_value}% - {message}")
+        stage = status.get("stage")
+        if stage:
+            st.caption(f"Checkpoint atual: {stage}")
+        st.caption(f"Job: {job_id}")
+        if st.button("Cancelar conciliação", key="job_cancel"):
+            cancel_job(job_id)
+            st.rerun()
+        time.sleep(1)
+        st.rerun()
+        return
+
+    if state == "done":
+        try:
+            result = load_result(job_id)
+            st.session_state["df_bnk"] = result["df_bnk"]
+            st.session_state["df_fin"] = result["df_fin"]
+            st.session_state["review_cards"] = result["review_cards"]
+            st.session_state["balance_warning"] = result["balance_warning"]
+            st.session_state["performance_timings"] = result["performance_timings"]
+            st.session_state["agent_report"] = result["agent_report"]
 
             cliente_nome = st.session_state.get("cliente_conciliacao", "desconhecido")
             log_acao(
                 st.session_state.get("usuario_email", "desconhecido"),
                 "CONCILIACAO_REALIZADA",
-                f"cliente={cliente_nome}",
+                f"cliente={cliente_nome};job={job_id}",
             )
 
+            st.session_state.pop("conciliation_job_id", None)
             st.session_state["wiz_step"] = 8
             st.rerun()
         except Exception as e:
-            st.error(f"Erro durante a conciliação: {e}")
+            st.error(f"Erro ao carregar resultado da conciliação: {e}")
+        return
+
+    if state == "cancelled":
+        st.warning(message or "Conciliação cancelada.")
+        if st.button("Liberar nova execução", key="job_clear_cancelled"):
+            st.session_state.pop("conciliation_job_id", None)
+            st.rerun()
+        return
+
+    st.error(message or "A conciliação em segundo plano falhou.")
+    if st.button("Liberar nova execução", key="job_clear_error"):
+        st.session_state.pop("conciliation_job_id", None)
+        st.rerun()
 
 
 def _etapa_revisao_download():
@@ -582,10 +627,17 @@ def _etapa_revisao_download():
         conciliados = (df_bnk["_status"] == "CONCILIADO").sum() + (df_bnk["_status"] == "CONCILIADO_MANUAL").sum()
         sem_par = (df_bnk["_status"] == "SEM_PAREAMENTO").sum()
         revisar = df_bnk["_status"].isin(["REVISAR", "REVISAR_COLISAO"]).sum()
+        parciais = (df_bnk["_status"] == "PARCIALMENTE CONCILIADO").sum()
+        pendentes_parciais = (df_bnk["_status"] == "PENDENTE DE CONCILIAÇÃO PARCIAL").sum()
         col1.metric("Conciliados", int(conciliados))
         col2.metric("Sem par", int(sem_par))
         col3.metric("A revisar", int(revisar))
         col4.metric("Total banco", len(df_bnk))
+        if revisar or sem_par or parciais or pendentes_parciais:
+            st.info(
+                "O relatório pode ser gerado mesmo com pendências. "
+                "As linhas seguem com status de revisão, sem par ou conciliação parcial."
+            )
 
     bw = st.session_state.get("balance_warning")
     if bw:

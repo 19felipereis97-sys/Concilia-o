@@ -1,1 +1,50 @@
-{}
+{
+  "extrato_sheet": "Planilha1",
+  "extrato_skip": 8,
+  "extrato_suffix": ".xlsx",
+  "fin_sheet": "Planilha1",
+  "fin_skip": 0,
+  "fin_suffix": ".xlsx",
+  "fin_modalidade_str": "PAGAMENTOS",
+  "default_year": 2026,
+  "param_tol": 0,
+  "param_group": 30,
+  "param_max_candidates": 40,
+  "param_combo_timeout": 1.0,
+  "param_offsets": "0,1,-1,2,-2",
+  "param_discard": "SDO\nSALDO\nS/D\nSALDO ANTERIOR\nSALDO DO DIA",
+  "extrato_mapping": {
+    "col_data": "Data",
+    "col_historico": [
+      "Lançamento"
+    ],
+    "valor_modalidade": "coluna_unica",
+    "col_valor": "Valor",
+    "col_debito": null,
+    "col_credito": null,
+    "col_id": null,
+    "colunas_extras": [],
+    "skip_rows": 8,
+    "sheet_name": "Planilha1"
+  },
+  "fin_mapping": {
+    "col_data": "BAIXA",
+    "col_historico": [
+      "FOR_RAZ",
+      "NUMERO",
+      "NAT_DESCRIC"
+    ],
+    "valor_modalidade": "coluna_unica",
+    "col_valor": "PAGTO_PARCIAL",
+    "col_debito": null,
+    "col_credito": null,
+    "col_id": null,
+    "col_classificacao": "NAT_DESCRIC",
+    "colunas_extras": [],
+    "skip_rows": 0,
+    "sheet_name": "Planilha1",
+    "modalidade": "pagamentos",
+    "hist_prefix": "",
+    "hist_separator": " - "
+  }
+}

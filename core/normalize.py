@@ -24,7 +24,9 @@ STATUS_PARCIAL             = "PARCIALMENTE CONCILIADO"
 STATUS_PENDENTE_PARCIAL    = "PENDENTE DE CONCILIAÇÃO PARCIAL"
 
 
-_DD_MM_RE = re.compile(r"^\d{1,2}/\d{1,2}$")
+_DD_MM_RE = re.compile(r"^\d{1,2}[\/\-.]\d{1,2}$")
+_EXCEL_SERIAL_MIN = 1
+_EXCEL_SERIAL_MAX = 60000
 
 
 def _parse_date(value, default_year: int = 0) -> Optional[datetime.date]:
@@ -34,20 +36,39 @@ def _parse_date(value, default_year: int = 0) -> Optional[datetime.date]:
         return value.date()
     if isinstance(value, datetime.date):
         return value
+    if isinstance(value, pd.Timestamp):
+        return value.date()
     if str(value).strip() == "":
         return None
     v = str(value).strip()
+    if v.lower() in {"nat", "nan", "none"}:
+        return None
+    v = re.sub(r"\s+", " ", v)
     if _DD_MM_RE.match(v):
         year = default_year if default_year else datetime.date.today().year
-        v = f"{v}/{year}"
+        sep = "/" if "/" in v else "-" if "-" in v else "."
+        dia, mes = v.split(sep)
+        v = f"{dia}/{mes}/{year}"
+    if re.fullmatch(r"\d+(\.0+)?", v):
+        serial = int(float(v))
+        if _EXCEL_SERIAL_MIN <= serial <= _EXCEL_SERIAL_MAX:
+            try:
+                return (datetime.date(1899, 12, 30) + datetime.timedelta(days=serial))
+            except Exception:
+                pass
     for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d.%m.%Y",
-                "%Y-%m-%d", "%Y/%m/%d", "%Y%m%d"):
+                "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d-%m-%Y %H:%M:%S",
+                "%Y-%m-%d", "%Y/%m/%d", "%Y%m%d",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
         try:
             return datetime.datetime.strptime(v, fmt).date()
         except ValueError:
             continue
     try:
-        return pd.to_datetime(v, dayfirst=True).date()
+        parsed = pd.to_datetime(v, dayfirst=True, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.date()
     except Exception:
         return None
 
@@ -191,9 +212,9 @@ def _enum_val(m) -> str:
 def _extract_valor_extrato(row, mapping, params):
     if _enum_val(mapping.valor_modalidade) == ValorModalidade.COLUNA_UNICA.value:
         return _parse_decimal(row.get(mapping.col_valor, ""))
-    deb = _parse_decimal(row.get(mapping.col_debito, "")) or Decimal("0")
-    cre = _parse_decimal(row.get(mapping.col_credito, "")) or Decimal("0")
-    result = deb - cre
+    pagamentos = _parse_decimal(row.get(mapping.col_debito, "")) or Decimal("0")
+    recebimentos = _parse_decimal(row.get(mapping.col_credito, "")) or Decimal("0")
+    result = abs(recebimentos) - abs(pagamentos)
     return result if result != Decimal("0") else None
 
 
@@ -201,9 +222,9 @@ def _extract_valor_financeiro(row, mapping, params):
     if _enum_val(mapping.valor_modalidade) == ValorModalidade.COLUNA_UNICA.value:
         v = _parse_decimal(row.get(mapping.col_valor, ""))
     else:
-        deb = _parse_decimal(row.get(mapping.col_debito, "")) or Decimal("0")
-        cre = _parse_decimal(row.get(mapping.col_credito, "")) or Decimal("0")
-        v = deb - cre
+        pagamentos = _parse_decimal(row.get(mapping.col_debito, "")) or Decimal("0")
+        recebimentos = _parse_decimal(row.get(mapping.col_credito, "")) or Decimal("0")
+        v = abs(recebimentos) - abs(pagamentos)
         if v == Decimal("0"):
             return None
     if v is None:

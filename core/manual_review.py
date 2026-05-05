@@ -124,6 +124,7 @@ def build_review_queue(
                 float(rec_b["_valor"]),
                 int(getattr(params, "max_candidates_per_group", 0) or 0),
                 value_key="valor",
+                max_group_size=params.max_group_size,
             )
             candidatos = _filter_to_valid_combos(
                 candidatos, float(rec_b["_valor"]), tol, params.max_group_size
