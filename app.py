@@ -205,12 +205,82 @@ def _perf_add(etapa: str, inicio: float, extra: str = ""):
 
 
 def _render_performance_timings():
+    import dataclasses as _dc
+    import json as _json
+
     timings = st.session_state.get("performance_timings", [])
     if not timings:
         return
+
+    sorted_t = sorted(timings, key=lambda x: float(x["Tempo (s)"]))
     total = sum(float(t["Tempo (s)"]) for t in timings)
-    with st.expander(f"Benchmark da última execução — total medido: {total:.3f}s", expanded=False):
-        st.dataframe(pd.DataFrame(timings), hide_index=True, width="stretch")
+    mais_demorado = sorted_t[-1]
+    mais_rapido = sorted_t[0]
+
+    with st.expander(f"Diagnóstico da execução — {total:.3f}s no total", expanded=False):
+
+        # ── Resumo de tempos ──────────────────────────────────────────────────
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Tempo total", f"{total:.3f}s")
+        c2.metric(
+            "Processo mais demorado",
+            f"{float(mais_demorado['Tempo (s)']):.3f}s",
+            delta=mais_demorado["Etapa"],
+            delta_color="off",
+        )
+        if mais_rapido["Etapa"] != mais_demorado["Etapa"]:
+            c3.metric(
+                "Processo mais rápido",
+                f"{float(mais_rapido['Tempo (s)']):.3f}s",
+                delta=mais_rapido["Etapa"],
+                delta_color="off",
+            )
+
+        st.markdown("**Detalhamento por etapa**")
+        st.dataframe(pd.DataFrame(timings), hide_index=True, use_container_width=True)
+
+        # ── Mapeamento aplicado ───────────────────────────────────────────────
+        st.divider()
+        st.markdown("**Mapeamento da conciliação**")
+
+        def _dc_to_dict(obj):
+            if obj is None or not _dc.is_dataclass(obj):
+                return None
+            return _json.loads(_json.dumps(_dc.asdict(obj), default=str))
+
+        fin_mod = st.session_state.get("fin_modalidade_str", "COMPLETO")
+        st.caption(f"Modalidade financeiro: **{fin_mod}**")
+
+        col_e, col_f = st.columns(2)
+        with col_e:
+            st.markdown("*Extrato bancário*")
+            d = _dc_to_dict(st.session_state.get("extrato_mapping"))
+            st.json(d, expanded=False) if d else st.caption("Não disponível")
+        with col_f:
+            lbl = "Recebimentos" if fin_mod == "SEPARADOS" else "Financeiro"
+            st.markdown(f"*{lbl}*")
+            d = _dc_to_dict(st.session_state.get("fin_mapping"))
+            st.json(d, expanded=False) if d else st.caption("Não disponível")
+
+        if fin_mod == "SEPARADOS":
+            st.markdown("*Pagamentos*")
+            d = _dc_to_dict(st.session_state.get("fin2_mapping"))
+            st.json(d, expanded=False) if d else st.caption("Não disponível")
+
+        # ── Parâmetros da conciliação ─────────────────────────────────────────
+        params_obj = st.session_state.get("params")
+        if params_obj:
+            st.divider()
+            st.markdown("**Parâmetros da conciliação**")
+            d = _dc_to_dict(params_obj)
+            if d:
+                p1, p2, p3, p4 = st.columns(4)
+                p1.metric("Tolerância (centavos)", d.get("value_tolerance_cents", 0))
+                p2.metric("Tamanho máx. grupo N:1", d.get("max_group_size", "—"))
+                p3.metric("Timeout combinatória (s)", d.get("combo_timeout_sec", "—"))
+                p4.metric("Offsets de data", str(d.get("date_offsets", [])))
+                with st.expander("Todos os parâmetros", expanded=False):
+                    st.json(d)
 
 
 def _render_agent_report():
@@ -258,25 +328,45 @@ def sidebar() -> str:
         cor = "#FF9500" if perfil == "admin" else "#1565C0"
         inicial = (nome or email)[0].upper() if (nome or email) else "?"
         display_name = nome if nome else email
+        depto_html = (
+            f"<div style='font-size:0.72em;color:#888;margin-top:3px;"
+            f"letter-spacing:0.06em;text-transform:uppercase'>{depto}</div>"
+            if depto else ""
+        )
 
-        col_av, col_info = st.columns([1, 3])
-        with col_av:
-            st.markdown(
-                f"<div style='width:38px;height:38px;border-radius:50%;background:{cor};"
-                f"display:flex;align-items:center;justify-content:center;"
-                f"font-size:1.1em;font-weight:700;color:white;margin-top:2px'>{inicial}</div>",
-                unsafe_allow_html=True,
-            )
-        with col_info:
-            st.markdown(f"**{display_name}**")
-            st.markdown(
-                f"<span style='background:{cor}22;color:{cor};padding:2px 9px;"
-                f"border-radius:20px;font-size:0.78em;font-weight:600;"
-                f"border:1px solid {cor}55'>{perfil_label}</span>",
-                unsafe_allow_html=True,
-            )
-            if depto:
-                st.caption(depto)
+        st.markdown(
+            f"""
+            <div style="display:flex;flex-direction:column;align-items:center;
+                        padding:14px 10px 16px;margin-bottom:2px;
+                        background:rgba(255,255,255,0.04);
+                        border-radius:14px;
+                        border:1px solid rgba(255,255,255,0.07);
+                        gap:8px;">
+                <div style="width:54px;height:54px;border-radius:50%;
+                            background:linear-gradient(135deg,{cor},{cor}99);
+                            display:flex;align-items:center;justify-content:center;
+                            font-size:1.45em;font-weight:800;color:white;
+                            box-shadow:0 4px 14px {cor}55;flex-shrink:0;">
+                    {inicial}
+                </div>
+                <div style="text-align:center;line-height:1.35;">
+                    <div style="font-weight:700;font-size:0.88em;color:#e8e8e8;
+                                letter-spacing:0.04em;text-transform:uppercase;">
+                        {display_name}
+                    </div>
+                </div>
+                <span style="background:{cor}1a;color:{cor};
+                             padding:3px 13px;border-radius:20px;
+                             font-size:0.70em;font-weight:700;
+                             border:1px solid {cor}44;letter-spacing:0.05em;
+                             text-transform:uppercase;">
+                    {perfil_label}
+                </span>
+                {depto_html}
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         st.divider()
 
         opcoes = ["Conciliação Contábil", "De x Para Geral", "Minha Conta"]
@@ -467,7 +557,6 @@ def _render_template_selector(cliente_id: int) -> None:
             if tpl and tpl.get("config"):
                 apply_wizard_config_data(st.session_state, tpl["config"], overwrite=True)
                 st.session_state["banco_layout_conciliacao"] = tpl.get("banco_nome", "")
-                st.session_state["banco_layout_conciliacao_input"] = tpl.get("banco_nome", "")
                 _sync_tmp_keys_after_template()
                 log_acao(
                     st.session_state.get("usuario_email", "desconhecido"),
@@ -724,7 +813,6 @@ def _etapa_revisao_download():
     bw = st.session_state.get("balance_warning")
     if bw:
         _render_balance_comparison(bw)
-    _render_performance_timings()
     _render_agent_report()
 
     cards = step_review(cards)
@@ -757,6 +845,19 @@ def _etapa_revisao_download():
     else:
         st.warning("Selecione um cliente na etapa 1 para aplicar o De x Para.")
 
+    hist_mode = st.radio(
+        "Histórico na aba Importação Alterdata",
+        ["Banco + Financeiro", "Somente bancário", "Somente financeiro"],
+        index=0,
+        horizontal=True,
+        key="alterdata_hist_mode",
+        help=(
+            "Banco + Financeiro: concatena o histórico bancário com o descrição do lançamento financeiro.\n"
+            "Somente bancário: usa apenas o histórico do extrato.\n"
+            "Somente financeiro: usa apenas a descrição do lançamento financeiro (fallback para bancário quando não há par)."
+        ),
+    )
+
     if st.button("Gerar Relatório Excel", type="primary", key="btn_gerar"):
         if not cliente_id:
             st.error("Selecione um cliente na etapa 1 antes de gerar o relatório com De x Para.")
@@ -766,7 +867,11 @@ def _etapa_revisao_download():
             return
         with st.spinner("Gerando relatório..."):
             t0 = time.perf_counter()
-            xlsx_bytes = build_report(df_bnk, df_fin, depara_dict, conta_banco=conta_banco)
+            xlsx_bytes = build_report(
+                df_bnk, df_fin, depara_dict,
+                conta_banco=conta_banco,
+                hist_mode=hist_mode,
+            )
             _perf_add("Geração do Excel", t0, f"{len(df_bnk)} banco / {len(df_fin)} financeiro")
             log_acao(
                 st.session_state.get("usuario_email", "desconhecido"),
@@ -783,7 +888,8 @@ def _etapa_revisao_download():
                 file_name=_fname,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            _render_performance_timings()
+
+    _render_performance_timings()
 
     st.divider()
     if st.button("Nova contabilização", key="btn_nova"):

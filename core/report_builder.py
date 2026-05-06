@@ -77,10 +77,12 @@ def build_report(
     df_fin: pd.DataFrame,
     depara: Optional[dict] = None,
     conta_banco: str = "",
+    hist_mode: str = "Banco + Financeiro",
 ) -> bytes:
     """
     Constrói workbook Excel com 6 abas e retorna bytes.
     depara: dict {classif -> conta_contabil}
+    hist_mode: "Banco + Financeiro" | "Somente bancário" | "Somente financeiro"
     """
     for col in ["_id", "_data", "_valor", "_historico", "_classif", "_status", "_metodo", "_id_bnk"]:
         if col not in df_fin.columns:
@@ -95,7 +97,7 @@ def build_report(
     wb = Workbook()
     wb.remove(wb.active)
 
-    _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco)
+    _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco, hist_mode)
     _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco)
     _build_extrato(wb, df_bnk)
     _build_financeiro(wb, df_fin)
@@ -145,7 +147,16 @@ def _concat_hist(hist_banco: str, hist_fin: str, sep: str = " - ") -> str:
     return sep.join(parts)
 
 
-def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco):
+def _pick_hist(hist_banco: str, hist_fin: str, hist_mode: str) -> str:
+    """Retorna o histórico conforme a preferência do usuário."""
+    if hist_mode == "Somente bancário":
+        return hist_banco
+    if hist_mode == "Somente financeiro":
+        return hist_fin or hist_banco  # fallback para bancário quando não há financeiro vinculado
+    return _concat_hist(hist_banco, hist_fin)  # "Banco + Financeiro" (padrão)
+
+
+def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco, hist_mode="Banco + Financeiro"):
     ws = wb.create_sheet("Importação Alterdata")
     headers = ["Histórico", "Nota Fiscal", "Data", "Nat. Cod", "Nat. Desc.", "Valor", "Débito", "Crédito"]
     ws.append(headers)
@@ -184,7 +195,7 @@ def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco):
                 )
                 hist_fin = str(fin_row.get("_historico", "")).strip()
                 ws.append([
-                    _concat_hist(hist_banco, hist_fin),
+                    _pick_hist(hist_banco, hist_fin, hist_mode),
                     None,
                     data_val,
                     None,
@@ -202,7 +213,7 @@ def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco):
             )
             hist_fin = _resolve_historico_fin(ids_fin_str, fin_by_id)
             ws.append([
-                _concat_hist(hist_banco, hist_fin),
+                _pick_hist(hist_banco, hist_fin, hist_mode),
                 None,
                 data_val,
                 None,
