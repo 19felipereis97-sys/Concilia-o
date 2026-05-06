@@ -205,9 +205,6 @@ def _perf_add(etapa: str, inicio: float, extra: str = ""):
 
 
 def _render_performance_timings():
-    import dataclasses as _dc
-    import json as _json
-
     timings = st.session_state.get("performance_timings", [])
     if not timings:
         return
@@ -238,49 +235,6 @@ def _render_performance_timings():
 
         st.markdown("**Detalhamento por etapa**")
         st.dataframe(pd.DataFrame(timings), hide_index=True, use_container_width=True)
-
-        # ── Mapeamento aplicado ───────────────────────────────────────────────
-        st.divider()
-        st.markdown("**Mapeamento da conciliação**")
-
-        def _dc_to_dict(obj):
-            if obj is None or not _dc.is_dataclass(obj):
-                return None
-            return _json.loads(_json.dumps(_dc.asdict(obj), default=str))
-
-        fin_mod = st.session_state.get("fin_modalidade_str", "COMPLETO")
-        st.caption(f"Modalidade financeiro: **{fin_mod}**")
-
-        col_e, col_f = st.columns(2)
-        with col_e:
-            st.markdown("*Extrato bancário*")
-            d = _dc_to_dict(st.session_state.get("extrato_mapping"))
-            st.json(d, expanded=False) if d else st.caption("Não disponível")
-        with col_f:
-            lbl = "Recebimentos" if fin_mod == "SEPARADOS" else "Financeiro"
-            st.markdown(f"*{lbl}*")
-            d = _dc_to_dict(st.session_state.get("fin_mapping"))
-            st.json(d, expanded=False) if d else st.caption("Não disponível")
-
-        if fin_mod == "SEPARADOS":
-            st.markdown("*Pagamentos*")
-            d = _dc_to_dict(st.session_state.get("fin2_mapping"))
-            st.json(d, expanded=False) if d else st.caption("Não disponível")
-
-        # ── Parâmetros da conciliação ─────────────────────────────────────────
-        params_obj = st.session_state.get("params")
-        if params_obj:
-            st.divider()
-            st.markdown("**Parâmetros da conciliação**")
-            d = _dc_to_dict(params_obj)
-            if d:
-                p1, p2, p3, p4 = st.columns(4)
-                p1.metric("Tolerância (centavos)", d.get("value_tolerance_cents", 0))
-                p2.metric("Tamanho máx. grupo N:1", d.get("max_group_size", "—"))
-                p3.metric("Timeout combinatória (s)", d.get("combo_timeout_sec", "—"))
-                p4.metric("Offsets de data", str(d.get("date_offsets", [])))
-                with st.expander("Todos os parâmetros", expanded=False):
-                    st.json(d)
 
 
 def _render_agent_report():
@@ -551,7 +505,6 @@ def _render_template_selector(cliente_id: int) -> None:
             format_func=lambda tid: labels.get(tid, str(tid)),
         )
     with col_apply:
-        st.write("")
         if st.button("Aplicar", key="conc_template_apply", use_container_width=True):
             tpl = get_conciliacao_template(template_id)
             if tpl and tpl.get("config"):
@@ -568,7 +521,6 @@ def _render_template_selector(cliente_id: int) -> None:
             else:
                 st.error("Template vazio ou inválido.")
     with col_del:
-        st.write("")
         if st.button("Excluir", key="conc_template_delete", use_container_width=True):
             delete_conciliacao_template(template_id)
             log_acao(
@@ -813,7 +765,6 @@ def _etapa_revisao_download():
     bw = st.session_state.get("balance_warning")
     if bw:
         _render_balance_comparison(bw)
-    _render_agent_report()
 
     cards = step_review(cards)
     st.session_state["review_cards"] = cards
@@ -889,6 +840,7 @@ def _etapa_revisao_download():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
 
+    _render_agent_report()
     _render_performance_timings()
 
     st.divider()
@@ -1133,23 +1085,43 @@ def depara_page():
 def minha_conta_page():
     email = st.session_state.get("usuario_email", "")
     perfil = st.session_state.get("usuario_perfil", "")
+    nome = st.session_state.get("usuario_nome", "").strip()
+    depto = st.session_state.get("usuario_departamento", "").strip()
 
     perfil_label = "Administrador" if perfil == "admin" else "Operacional"
-    cor = "#FF9500" if perfil == "admin" else "#21C354"
-    inicial = email[0].upper() if email else "?"
+    cor = "#FF9500" if perfil == "admin" else "#1565C0"
+    display_name = nome if nome else email
+    inicial = display_name[0].upper() if display_name else "?"
+    depto_html = (
+        f"<div style='font-size:0.74em;color:#888;margin-top:5px;"
+        f"letter-spacing:0.06em;text-transform:uppercase'>{depto}</div>"
+        if depto else ""
+    )
 
     st.markdown(
-        f"""<div style="border:1px solid #e0e0e030;border-radius:14px;
-        padding:24px 28px;display:flex;align-items:center;gap:20px;
-        margin-bottom:28px;background:linear-gradient(135deg,{cor}12,transparent);">
-            <div style="width:64px;height:64px;border-radius:50%;background:{cor};
-            display:flex;align-items:center;justify-content:center;
-            font-size:1.8em;font-weight:700;color:white;flex-shrink:0;">{inicial}</div>
+        f"""<div style="border:1px solid rgba(255,255,255,0.07);border-radius:14px;
+        padding:22px 28px;display:flex;align-items:center;gap:22px;
+        margin-bottom:28px;background:rgba(255,255,255,0.04);">
+            <div style="width:64px;height:64px;border-radius:50%;
+                        background:linear-gradient(135deg,{cor},{cor}99);
+                        display:flex;align-items:center;justify-content:center;
+                        font-size:1.8em;font-weight:800;color:white;flex-shrink:0;
+                        box-shadow:0 4px 16px {cor}55;">
+                {inicial}
+            </div>
             <div>
-                <p style="margin:0 0 4px;font-size:1.05em;font-weight:600;">{email}</p>
-                <span style="background:{cor}22;color:{cor};padding:4px 14px;
-                border-radius:20px;font-size:0.82em;font-weight:600;
-                border:1px solid {cor}55;">{perfil_label}</span>
+                <p style="margin:0 0 2px;font-size:1.0em;font-weight:700;
+                          letter-spacing:0.04em;text-transform:uppercase;">
+                    {display_name}
+                </p>
+                <p style="margin:0 0 8px;font-size:0.8em;color:#888;">{email}</p>
+                <span style="background:{cor}1a;color:{cor};padding:3px 13px;
+                             border-radius:20px;font-size:0.70em;font-weight:700;
+                             border:1px solid {cor}44;letter-spacing:0.05em;
+                             text-transform:uppercase;">
+                    {perfil_label}
+                </span>
+                {depto_html}
             </div>
         </div>""",
         unsafe_allow_html=True,
@@ -1175,9 +1147,29 @@ def minha_conta_page():
             st.error("Senha atual incorreta.")
 
 
+# ── Estilos globais ────────────────────────────────────────────────────────────
+
+def _inject_global_styles():
+    st.markdown(
+        """
+        <style>
+        /* Alinha todos os itens de uma linha de colunas pela base, garantindo que
+           botões (sem label) fiquem nivelados com inputs, selects e outros controles
+           que possuem label acima. */
+        div[data-testid="stHorizontalBlock"] {
+            align-items: flex-end;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def main():
+    _inject_global_styles()
+
     # Gate de autenticação
     if "usuario_email" not in st.session_state:
         authenticated = show_login()
