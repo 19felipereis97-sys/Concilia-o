@@ -25,13 +25,14 @@ _STATUS_ICON = {
 
 
 def _render_cand_checkbox(card: ReviewCard, cand: dict, selecionados: list) -> None:
+    card_key = card.id_fin or card.id_bnk
     delta_label = f"+{cand['delta_dias']}d" if cand["delta_dias"] else "D0"
     prob = _PROB_LABEL.get(cand.get("probabilidade", "baixa"), "○")
     label = (
         f"[{prob}] `{cand['id']}` | {fmt_data(cand['data'])} ({delta_label})"
         f" | {fmt_valor(cand['valor'])} | {cand['historico'][:45]}"
     )
-    if st.checkbox(label, key=f"chk_{card.id_bnk}_{cand['id']}", value=cand["id"] in card.selecao_pre):
+    if st.checkbox(label, key=f"chk_{card_key}_{cand['id']}", value=cand["id"] in card.selecao_pre):
         selecionados.append(cand["id"])
 
 
@@ -64,7 +65,7 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
             if term in c.historico.lower()
             or term in fmt_data(c.data).lower()
             or term in fmt_valor(c.valor).lower()
-            or term in c.id_bnk.lower()
+            or term in (c.id_fin or c.id_bnk).lower()
         ]
         n_ocultos = len(cards) - len(cards_visiveis)
         if n_ocultos:
@@ -75,6 +76,7 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
 
     # ── Cards ─────────────────────────────────────────────────────────────────
     for i, card in enumerate(cards_visiveis):
+        card_key = card.id_fin or card.id_bnk
 
         # ── 1. Ícone de status no título do expander ──────────────────────────
         icon  = _STATUS_ICON.get(card.decisao, "⏳")
@@ -84,8 +86,9 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
             col_bnk, col_fin = st.columns([1, 2])
 
             with col_bnk:
-                st.markdown("**Lançamento Bancário**")
-                st.markdown(f"**ID:** `{card.id_bnk}`")
+                base_label = "Lançamento Financeiro" if card.id_fin else "Lançamento Bancário"
+                st.markdown(f"**{base_label}**")
+                st.markdown(f"**ID:** `{card_key}`")
                 st.markdown(f"**Data:** {fmt_data(card.data)}")
                 st.markdown(f"**Valor:** {fmt_valor(card.valor)}")
                 st.markdown("**Histórico:**")
@@ -93,41 +96,42 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
 
             with col_fin:
                 if card.candidatos:
-                    st.markdown("**Candidatos Financeiros**")
+                    cand_label = "Candidatos Bancários" if card.id_fin else "Candidatos Financeiros"
+                    st.markdown(f"**{cand_label}**")
 
                     # ── 3. Navegação de combinações válidas ───────────────────
                     if card.combinacoes:
                         n_combos  = len(card.combinacoes)
-                        combo_key = f"combo_idx_{card.id_bnk}"
+                        combo_key = f"combo_idx_{card_key}"
                         if combo_key not in st.session_state:
                             st.session_state[combo_key] = 0
                         idx = min(st.session_state[combo_key], n_combos - 1)
 
                         nav1, nav2, nav3, nav4 = st.columns([1, 1, 3, 3])
                         with nav1:
-                            if st.button("◀", key=f"btn_prev_{card.id_bnk}", disabled=(idx == 0)):
+                            if st.button("◀", key=f"btn_prev_{card_key}", disabled=(idx == 0)):
                                 for c in card.candidatos:
-                                    st.session_state[f"chk_{card.id_bnk}_{c['id']}"] = False
+                                    st.session_state[f"chk_{card_key}_{c['id']}"] = False
                                 st.session_state[combo_key] = idx - 1
                                 st.rerun()
                         with nav2:
-                            if st.button("▶", key=f"btn_next_{card.id_bnk}", disabled=(idx >= n_combos - 1)):
+                            if st.button("▶", key=f"btn_next_{card_key}", disabled=(idx >= n_combos - 1)):
                                 for c in card.candidatos:
-                                    st.session_state[f"chk_{card.id_bnk}_{c['id']}"] = False
+                                    st.session_state[f"chk_{card_key}_{c['id']}"] = False
                                 st.session_state[combo_key] = idx + 1
                                 st.rerun()
                         with nav3:
                             st.markdown(f"**Combinação {idx + 1} / {n_combos}**")
                         with nav4:
-                            if st.button("⚡ Selecionar combinação", key=f"btn_sel_combo_{card.id_bnk}"):
+                            if st.button("⚡ Selecionar combinação", key=f"btn_sel_combo_{card_key}"):
                                 combo_atual = set(card.combinacoes[idx])
                                 for c in card.candidatos:
-                                    st.session_state[f"chk_{card.id_bnk}_{c['id']}"] = c["id"] in combo_atual
+                                    st.session_state[f"chk_{card_key}_{c['id']}"] = c["id"] in combo_atual
                                 st.rerun()
 
                     filtro = st.text_input(
                         "Filtrar candidatos:",
-                        key=f"filter_{card.id_bnk}",
+                        key=f"filter_{card_key}",
                         placeholder="Histórico, ID ou classificação…",
                         label_visibility="collapsed",
                     )
@@ -194,7 +198,7 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
                 decisao = st.radio(
                     "Decisão:",
                     ["Conciliar seleção", "Ignorar linha", "Deixar sem decisão"],
-                    key=f"review_dec_{card.id_bnk}",
+                    key=f"review_dec_{card_key}",
                     index=2,
                     horizontal=True,
                 )
@@ -207,7 +211,7 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
                 decisao = st.radio(
                     "Decisão:",
                     ["Ignorar linha", "Deixar sem decisão"],
-                    key=f"review_dec_{card.id_bnk}",
+                    key=f"review_dec_{card_key}",
                     index=1,
                     horizontal=True,
                 )

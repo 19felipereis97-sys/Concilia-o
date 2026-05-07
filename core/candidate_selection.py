@@ -40,4 +40,25 @@ def limit_subset_candidates(
             str(candidate.get("_id", "")),
         )
 
-    return sorted(candidates, key=score)[:max_candidates], True
+    ranked = sorted(candidates, key=score)
+
+    # Preserve também os maiores valores absolutos. Quando max_group_size é alto,
+    # a heurística por target/k pode favorecer muitos lançamentos pequenos e
+    # excluir o lançamento "âncora" que fecha grupos reais como 171000+8600+5500.
+    anchor_count = min(len(candidates), max(1, min(max_candidates // 3, 20)))
+    anchors = sorted(
+        candidates,
+        key=lambda c: (-abs(float(c.get(value_key, 0) or 0)), str(c.get("_id", ""))),
+    )[:anchor_count]
+
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for candidate in anchors + ranked:
+        marker = id(candidate)
+        if marker in seen_ids:
+            continue
+        selected.append(candidate)
+        seen_ids.add(marker)
+        if len(selected) >= max_candidates:
+            break
+    return selected, True

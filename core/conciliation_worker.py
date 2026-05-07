@@ -74,6 +74,7 @@ def run(job_id: str) -> None:
             progress=pct,
             stage="motor",
         ),
+        include_partial=False,
     )
     _perf_add(timings, "Motor de conciliacao", t0, f"{len(df_bnk)} banco / {len(df_fin)} financeiro")
 

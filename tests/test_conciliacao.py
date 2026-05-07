@@ -80,6 +80,87 @@ def test_t03_sem_par():
     assert f.iloc[0]["_status"] == "IGNORADO_SEM_CONTRAPARTIDA"
 
 
+def test_t03b_1n_ambiguo_bloqueia_financeiros_para_revisao():
+    """Ambiguidade 1:N deve travar os financeiros em disputa para a revisao."""
+    from core.manual_review import build_review_queue
+    from core.params import ConciliacaoParams
+
+    b, f = _run(
+        [_bnk("B1", "2024-01-10", "-100.00")],
+        [
+            _fin("F1", "2024-01-10", "-40.00", hist="POSTO"),
+            _fin("F2", "2024-01-10", "-60.00", hist="POSTO"),
+            _fin("F3", "2024-01-10", "-30.00", hist="OUTRO"),
+            _fin("F4", "2024-01-10", "-70.00", hist="OUTRO"),
+        ],
+    )
+
+    assert b.iloc[0]["_status"] == "REVISAR"
+    assert b.iloc[0]["_metodo"] == "1:N D ambiguo"
+    assert set(str(b.iloc[0]["_ids_fin"]).split(";")) == {"F1", "F2", "F3", "F4"}
+    assert set(f["_status"].astype(str)) == {"REVISAR"}
+    assert set(f["_id_bnk"].astype(str)) == {"B1"}
+
+    cards = build_review_queue(b, f, ConciliacaoParams())
+    assert len(cards) == 1
+    assert {c["id"] for c in cards[0].candidatos} == {"F1", "F2", "F3", "F4"}
+    assert sorted(map(set, cards[0].combinacoes), key=lambda s: sorted(s)) == [
+        {"F1", "F2"},
+        {"F3", "F4"},
+    ]
+
+
+def test_t03c_n1_ambiguo_vai_para_revisao_financeira():
+    """Ambiguidade N:1 deve mostrar um financeiro com candidatos bancarios."""
+    from core.manual_review import build_review_queue
+    from core.params import ConciliacaoParams
+
+    b, f = _run(
+        [
+            _bnk("B1", "2024-01-10", "-40.00"),
+            _bnk("B2", "2024-01-10", "-60.00"),
+            _bnk("B3", "2024-01-10", "-30.00"),
+            _bnk("B4", "2024-01-10", "-70.00"),
+        ],
+        [_fin("F1", "2024-01-10", "-100.00")],
+    )
+
+    assert f.iloc[0]["_status"] == "REVISAR"
+    assert f.iloc[0]["_metodo"] == "bloqueado:N:1 ambiguo"
+    cards = build_review_queue(b, f, ConciliacaoParams())
+    assert len(cards) == 1
+    assert cards[0].tipo == "N:1"
+    assert cards[0].id_fin == "F1"
+    assert {c["id"] for c in cards[0].candidatos} == {"B1", "B2", "B3", "B4"}
+    assert sorted(map(set, cards[0].combinacoes), key=lambda s: sorted(s)) == [
+        {"B1", "B2"},
+        {"B3", "B4"},
+    ]
+
+
+def test_t03d_revisao_com_combo_unico_concilia_automatico():
+    """Se a fila recalculada tem uma unica possibilidade, nao deve ir para revisao."""
+    from core.manual_review import build_review_queue
+    from core.params import ConciliacaoParams
+
+    df_b = pd.DataFrame([_bnk("B1", "2024-01-10", "-100.00")])
+    df_f = pd.DataFrame([
+        _fin("F1", "2024-01-10", "-40.00"),
+        _fin("F2", "2024-01-10", "-60.00"),
+    ])
+    df_b.loc[0, "_status"] = "REVISAR"
+    df_b.loc[0, "_metodo"] = "1:N D ambiguo"
+    df_b.loc[0, "_ids_fin"] = "F1;F2"
+    df_f["_status"] = "REVISAR"
+    df_f["_metodo"] = "bloqueado:1:N D ambiguo"
+    df_f["_id_bnk"] = "B1"
+
+    cards = build_review_queue(df_b, df_f, ConciliacaoParams())
+    assert cards == []
+    assert df_b.iloc[0]["_status"] == "CONCILIADO"
+    assert set(df_f["_status"].astype(str)) == {"CONCILIADO"}
+
+
 def test_t04_n_para_1_sispag():
     """N:1 — dois bancários somam o financeiro (requer enable_n_to_one=True)."""
     from core.engine import run_engine

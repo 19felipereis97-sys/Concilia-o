@@ -109,7 +109,14 @@ def match_one_to_n(
         vals = [c["_valor_f"] for c in candidatos_busca]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None
         search_start = time.monotonic()
-        matches = find_combos(vals, target_f, tol, params.max_group_size, deadline=deadline)
+        matches = find_combos(
+            vals,
+            target_f,
+            tol,
+            params.max_group_size,
+            deadline=deadline,
+            stop_after_first_k=True,
+        )
         timed_out = use_deadline and (time.monotonic() - search_start) >= (params.combo_timeout_sec * 0.95)
 
         if not matches:
@@ -135,7 +142,20 @@ def match_one_to_n(
                 free_fin.discard(r["_id"])
         else:
             if df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
+                ids_bloqueados = {
+                    candidatos_busca[i]["_id"]
+                    for match in matches
+                    for i in match
+                }
                 df_bnk.at[bi, "_status"] = STATUS_REVISAR
                 df_bnk.at[bi, "_metodo"] = f"{label_base} ambiguo"
+                df_bnk.at[bi, "_ids_fin"] = ";".join(sorted(ids_bloqueados))
+                for id_f in ids_bloqueados:
+                    fi = fin_pos.get(id_f)
+                    if fi is not None and df_fin.at[fi, "_status"] == STATUS_IGNORADO_SEM_PAR:
+                        df_fin.at[fi, "_status"] = STATUS_REVISAR
+                        df_fin.at[fi, "_metodo"] = f"bloqueado:{label_base} ambiguo"
+                        df_fin.at[fi, "_id_bnk"] = row_b["_id"]
+                        free_fin.discard(id_f)
 
     return df_bnk, df_fin

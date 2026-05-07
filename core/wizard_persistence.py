@@ -43,7 +43,8 @@ _WIDGET_KEYS: list[str] = [
     "pag_col_data", "pag_col_hist", "pag_hist_prefix", "pag_hist_sep",
     "pag_valor_mod", "pag_col_valor", "pag_col_deb", "pag_col_cre", "pag_col_classif",
     # parâmetros de conciliação
-    "param_tol", "param_group", "param_max_candidates", "param_combo_timeout",
+    "param_tol", "param_group", "param_max_candidates", "param_enable_n_to_one",
+    "param_n_to_one_candidates", "param_combo_timeout",
     "param_offsets", "param_discard",
 ]
 
@@ -76,6 +77,11 @@ def save_wizard_config(session_state: Any) -> None:
     """Salva as configurações relevantes do session_state em disco."""
     _CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = get_wizard_config_snapshot(session_state)
+
+    # Preserva chaves de documentação (_doc) que existam no arquivo atual
+    existing = _load_raw()
+    if "_doc" in existing:
+        data = {"_doc": existing["_doc"], **data}
 
     try:
         with open(_CONFIG_PATH, "w", encoding="utf-8") as f:

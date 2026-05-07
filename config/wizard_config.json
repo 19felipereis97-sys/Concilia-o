@@ -1,49 +1,61 @@
 {
-  "extrato_sheet": "Planilha1",
-  "extrato_skip": 8,
+  "_doc": {
+    "param_group": "Tamanho máximo do grupo de itens financeiros considerado num combo 1:N. 9999 = sem limite prático.",
+    "param_max_candidates": "Teto de candidatos financeiros avaliados por grupo no passo 1:N. 9999 = sem limite prático.",
+    "param_enable_n_to_one": "Habilita confronto N:1 (vários bancários para um financeiro). false = desabilitado por padrão.",
+    "param_n_to_one_candidates": "Teto de candidatos bancários avaliados por grupo no passo N:1.",
+    "param_combo_timeout": "Timeout em segundos por chamada de combinação. Grupos que estourem o tempo retornam resultado parcial marcado como REVISAR. 0 = sem limite.",
+    "param_tol": "Tolerância em centavos para considerar dois valores iguais. 0 = correspondência exata.",
+    "param_offsets": "Offsets de data a considerar (em dias). Ex.: 0,1,-1,2,-2 = mesmo dia, +1, -1, +2, -2.",
+    "param_discard": "Padrões de histórico bancário a ignorar (um por linha). Lançamentos com esses textos são excluídos do confronto."
+  },
+  "extrato_sheet": "Lançamentos",
+  "extrato_skip": 9,
   "extrato_suffix": ".xlsx",
-  "fin_sheet": "Planilha1",
-  "fin_skip": 0,
+  "fin_sheet": "financas",
+  "fin_skip": 2,
   "fin_suffix": ".xlsx",
-  "fin_modalidade_str": "PAGAMENTOS",
+  "fin_modalidade_str": "COMPLETO",
   "default_year": 2026,
   "param_tol": 0,
-  "param_group": 30,
-  "param_max_candidates": 40,
+  "param_group": 9999,
+  "param_max_candidates": 9999,
+  "param_enable_n_to_one": false,
+  "param_n_to_one_candidates": 9999,
   "param_combo_timeout": 1.0,
   "param_offsets": "0,1,-1,2,-2",
   "param_discard": "SDO\nSALDO\nS/D\nSALDO ANTERIOR\nSALDO DO DIA",
   "extrato_mapping": {
     "col_data": "Data",
     "col_historico": [
-      "Lançamento"
+      "Lançamento",
+      "Razão Social"
     ],
     "valor_modalidade": "coluna_unica",
-    "col_valor": "Valor",
+    "col_valor": "Valor (R$)",
     "col_debito": null,
     "col_credito": null,
     "col_id": null,
     "colunas_extras": [],
-    "skip_rows": 8,
-    "sheet_name": "Planilha1"
+    "skip_rows": 9,
+    "sheet_name": "Lançamentos"
   },
   "fin_mapping": {
-    "col_data": "BAIXA",
+    "col_data": "Data",
     "col_historico": [
-      "FOR_RAZ",
-      "NUMERO",
-      "NAT_DESCRIC"
+      "Cliente ou Fornecedor",
+      "Categoria"
     ],
     "valor_modalidade": "coluna_unica",
-    "col_valor": "PAGTO_PARCIAL",
+    "col_valor": "Valor (R$)",
     "col_debito": null,
     "col_credito": null,
     "col_id": null,
-    "col_classificacao": "NAT_DESCRIC",
+    "col_classificacao": "Categoria",
     "colunas_extras": [],
-    "skip_rows": 0,
-    "sheet_name": "Planilha1",
-    "modalidade": "pagamentos",
+    "skip_rows": 2,
+    "sheet_name": "financas",
+    "modalidade": "completo",
     "hist_prefix": "",
     "hist_separator": " - "
   }

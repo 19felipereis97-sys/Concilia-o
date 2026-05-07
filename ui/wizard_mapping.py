@@ -220,13 +220,25 @@ def step_params() -> ConciliacaoParams:
         tol = st.number_input("Tolerância de valor (centavos)", min_value=0, max_value=100, value=0, key="param_tol")
         max_group = st.number_input(
             "Tamanho máximo do grupo (1:N)",
-            min_value=2, max_value=30, value=30, key="param_group",
+            min_value=2, value=9999, key="param_group",
             help="Máximo de lançamentos financeiros que podem se combinar num único pareamento.",
         )
         max_candidates = st.number_input(
             "Candidatos maximos por grupo (1:N)",
-            min_value=2, max_value=40, value=40, key="param_max_candidates",
+            min_value=2, value=9999, key="param_max_candidates",
             help="Limite de candidatos avaliados em cada busca 1:N. Reduza para acelerar bases grandes.",
+        )
+        enable_n_to_one = st.checkbox(
+            "Ativar confronto N:1 (varios bancos para um financeiro)",
+            value=False,
+            key="param_enable_n_to_one",
+            help="Use somente quando o extrato agrupa ou divide pagamentos de forma que varios lancamentos bancarios devam fechar um financeiro.",
+        )
+        n_to_one_candidates = st.number_input(
+            "Candidatos maximos por grupo (N:1)",
+            min_value=2, value=int(max_candidates), key="param_n_to_one_candidates",
+            help="Limite de candidatos bancarios avaliados em cada busca N:1.",
+            disabled=not enable_n_to_one,
         )
         combo_timeout = st.number_input(
             "Tempo máximo por busca combinatória (s)",
@@ -264,13 +276,14 @@ def step_params() -> ConciliacaoParams:
         date_offsets=offsets,
         max_group_size=int(max_group),
         max_candidates_per_group=int(max_candidates),
+        n_to_one_max_candidates=int(n_to_one_candidates),
         value_tolerance_cents=int(tol),
         combo_timeout_sec=float(combo_timeout),
         discard_patterns=patterns,
         hist_separator=hist_sep or " - ",
         hist_prefix=hist_pfx,
         default_year=int(st.session_state.get("default_year", 0)),
-        enable_n_to_one=True,
+        enable_n_to_one=bool(enable_n_to_one),
     )
     st.session_state["params"] = params
     save_wizard_config(st.session_state)

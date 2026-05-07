@@ -28,6 +28,7 @@ from plan.client_store import (
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
 from core.normalize import normalize_extrato, normalize_financeiro
+from core.engine import run_engine
 from core.manual_review import apply_review_decisions
 from core.report_builder import build_report
 from core.background_jobs import (
@@ -45,6 +46,7 @@ from ui.wizard_mapping import (
     step_mapping_financeiro, step_params,
 )
 from ui.wizard_review import step_review
+from ui.manual_conciliator import step_manual_conciliator
 from ui.components import progress_bar
 from ui.login import show_login, show_change_password_required
 from ui.admin import show_admin_panel
@@ -264,9 +266,14 @@ def _render_agent_report():
 def sidebar() -> str:
     with st.sidebar:
         # ── Logo ──────────────────────────────────────────────────────────────
-        logo_path = Path(__file__).parent / "assets" / "logo_jca.png"
+        logo_path = Path(__file__).parent / "assets" / "logo_JCA.png_name_20221221-21843-1bcb5tg.png"
         if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
+            st.markdown(
+                f'<div style="text-align:center">'
+                f'<img src="data:image/png;base64,{__import__("base64").b64encode(logo_path.read_bytes()).decode()}" width="160">'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
         else:
             st.markdown("**JCA Contadores Associados**")
 
@@ -444,15 +451,6 @@ def _step_cliente_conta_banco() -> bool:
 
     if cliente_id and conta_banco:
         set_conta_banco(cliente_id, conta_banco)
-
-    banco_layout = st.text_input(
-        "Banco/layout da configuração",
-        value=st.session_state.get("banco_layout_conciliacao", ""),
-        key="banco_layout_conciliacao_input",
-        placeholder="Ex.: Bradesco, Itau, SISPAG, Extrato padrao",
-        help="Use este campo para salvar e reaplicar templates de mapeamento por cliente e banco.",
-    ).strip()
-    st.session_state["banco_layout_conciliacao"] = banco_layout
 
     if cliente_id:
         _render_template_selector(cliente_id)
@@ -740,49 +738,39 @@ def _render_conciliation_job():
         st.rerun()
 
 
-def _etapa_revisao_download():
-    df_bnk = st.session_state.get("df_bnk", pd.DataFrame())
-    df_fin = st.session_state.get("df_fin", pd.DataFrame())
-    cards = st.session_state.get("review_cards", [])
+def _metrics_bar(df_bnk: pd.DataFrame) -> None:
+    if df_bnk.empty or "_status" not in df_bnk.columns:
+        return
+    conciliados      = df_bnk["_status"].isin(["CONCILIADO", "CONCILIADO_MANUAL"]).sum()
+    sem_par          = (df_bnk["_status"] == "SEM_PAREAMENTO").sum()
+    revisar          = df_bnk["_status"].isin(["REVISAR", "REVISAR_COLISAO"]).sum()
+    parciais         = df_bnk["_status"].isin(["PARCIALMENTE CONCILIADO", "PENDENTE DE CONCILIAÇÃO PARCIAL"]).sum()
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Conciliados",  int(conciliados))
+    c2.metric("Sem par",      int(sem_par))
+    c3.metric("A revisar",    int(revisar))
+    c4.metric("Parciais",     int(parciais))
+    c5.metric("Total banco",  len(df_bnk))
 
-    col1, col2, col3, col4 = st.columns(4)
-    if not df_bnk.empty and "_status" in df_bnk.columns:
-        conciliados = (df_bnk["_status"] == "CONCILIADO").sum() + (df_bnk["_status"] == "CONCILIADO_MANUAL").sum()
-        sem_par = (df_bnk["_status"] == "SEM_PAREAMENTO").sum()
-        revisar = df_bnk["_status"].isin(["REVISAR", "REVISAR_COLISAO"]).sum()
-        parciais = (df_bnk["_status"] == "PARCIALMENTE CONCILIADO").sum()
-        pendentes_parciais = (df_bnk["_status"] == "PENDENTE DE CONCILIAÇÃO PARCIAL").sum()
-        col1.metric("Conciliados", int(conciliados))
-        col2.metric("Sem par", int(sem_par))
-        col3.metric("A revisar", int(revisar))
-        col4.metric("Total banco", len(df_bnk))
-        if revisar or sem_par or parciais or pendentes_parciais:
-            st.info(
-                "O relatório pode ser gerado mesmo com pendências. "
-                "As linhas seguem com status de revisão, sem par ou conciliação parcial."
-            )
 
-    bw = st.session_state.get("balance_warning")
-    if bw:
-        _render_balance_comparison(bw)
+def _release_all_revisar(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> tuple:
+    """Libera todos os REVISAR/REVISAR_COLISAO não resolvidos de volta ao pool livre."""
+    bnk_mask = df_bnk["_status"].isin(["REVISAR", "REVISAR_COLISAO"])
+    df_bnk.loc[bnk_mask, "_status"]  = "SEM_PAREAMENTO"
+    df_bnk.loc[bnk_mask, "_metodo"]  = ""
+    df_bnk.loc[bnk_mask, "_ids_fin"] = ""
+    fin_mask = df_fin["_status"].astype(str) == "REVISAR"
+    df_fin.loc[fin_mask, "_status"] = "IGNORADO_SEM_CONTRAPARTIDA"
+    df_fin.loc[fin_mask, "_metodo"] = ""
+    df_fin.loc[fin_mask, "_id_bnk"] = ""
+    return df_bnk, df_fin
 
-    cards = step_review(cards)
-    st.session_state["review_cards"] = cards
 
-    if cards and st.button("Aplicar decisões de revisão", key="btn_apply_review"):
-        df_bnk, df_fin = apply_review_decisions(df_bnk, df_fin, cards)
-        st.session_state["df_bnk"] = df_bnk
-        st.session_state["df_fin"] = df_fin
-        st.success("Decisões aplicadas!")
-        st.rerun()
-
-    st.divider()
-
+def _render_download_section(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> None:
     cliente_fluxo = st.session_state.get("cliente_conciliacao")
-    cliente_id = st.session_state.get("cliente_conciliacao_id")
+    cliente_id    = st.session_state.get("cliente_conciliacao_id")
     if not cliente_id and cliente_fluxo:
         cliente_id = get_cliente_id(cliente_fluxo)
-
     conta_banco = st.session_state.get("conta_banco_conciliacao", "")
     if not conta_banco and cliente_id:
         conta_banco = get_conta_banco(cliente_id)
@@ -799,50 +787,92 @@ def _etapa_revisao_download():
     hist_mode = st.radio(
         "Histórico na aba Importação Alterdata",
         ["Banco + Financeiro", "Somente bancário", "Somente financeiro"],
-        index=0,
-        horizontal=True,
-        key="alterdata_hist_mode",
-        help=(
-            "Banco + Financeiro: concatena o histórico bancário com o descrição do lançamento financeiro.\n"
-            "Somente bancário: usa apenas o histórico do extrato.\n"
-            "Somente financeiro: usa apenas a descrição do lançamento financeiro (fallback para bancário quando não há par)."
-        ),
+        index=0, horizontal=True, key="alterdata_hist_mode",
     )
-
     if st.button("Gerar Relatório Excel", type="primary", key="btn_gerar"):
         if not cliente_id:
             st.error("Selecione um cliente na etapa 1 antes de gerar o relatório com De x Para.")
             return
         if not conta_banco.strip():
-            st.error("Informe a conta contábil do banco na etapa 1 antes de aplicar o De x Para.")
+            st.error("Informe a conta contábil do banco na etapa 1.")
             return
         with st.spinner("Gerando relatório..."):
             t0 = time.perf_counter()
-            xlsx_bytes = build_report(
-                df_bnk, df_fin, depara_dict,
-                conta_banco=conta_banco,
-                hist_mode=hist_mode,
-            )
+            xlsx_bytes = build_report(df_bnk, df_fin, depara_dict, conta_banco=conta_banco, hist_mode=hist_mode)
             _perf_add("Geração do Excel", t0, f"{len(df_bnk)} banco / {len(df_fin)} financeiro")
-            log_acao(
-                st.session_state.get("usuario_email", "desconhecido"),
-                "RELATORIO_GERADO",
-                f"cliente={cliente_fluxo}",
-            )
-            _cli_data = get_cliente_by_id(cliente_id)
-            _codigo = (_cli_data.get("codigo_interno") or "").strip() if _cli_data else ""
+            log_acao(st.session_state.get("usuario_email", "desconhecido"), "RELATORIO_GERADO", f"cliente={cliente_fluxo}")
+            _cli_data   = get_cliente_by_id(cliente_id)
+            _codigo     = (_cli_data.get("codigo_interno") or "").strip() if _cli_data else ""
             _nome_trunc = ((_cli_data.get("nome") or "").strip()[:20] if _cli_data else "")
-            _fname = f"Conciliacao_{_codigo} - {_nome_trunc}.xlsx" if _codigo else "relatorio_conciliacao.xlsx"
+            _fname      = f"Conciliacao_{_codigo} - {_nome_trunc}.xlsx" if _codigo else "relatorio_conciliacao.xlsx"
             st.download_button(
-                label="Baixar Relatório (.xlsx)",
-                data=xlsx_bytes,
-                file_name=_fname,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                label="Baixar Relatório (.xlsx)", data=xlsx_bytes,
+                file_name=_fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-
     _render_agent_report()
     _render_performance_timings()
 
+
+def _etapa_revisao_download():
+    df_bnk = st.session_state.get("df_bnk", pd.DataFrame())
+    df_fin = st.session_state.get("df_fin", pd.DataFrame())
+    cards  = st.session_state.get("review_cards", [])
+    params = st.session_state.get("params")
+    phase  = st.session_state.get("review_phase", "B")
+
+    _metrics_bar(df_bnk)
+
+    bw = st.session_state.get("balance_warning")
+    if bw:
+        _render_balance_comparison(bw)
+
+    # ── Fase B — Revisão de ambiguidades ──────────────────────────────────────
+    if phase == "B":
+        if cards:
+            cards = step_review(cards)
+            st.session_state["review_cards"] = cards
+        else:
+            st.success("Nenhuma ambiguidade encontrada — pode avançar direto para a conciliação manual.")
+
+        st.divider()
+        col_adv, col_skip = st.columns([2, 1])
+        with col_adv:
+            if st.button("Aplicar decisões e avançar para Conciliação Manual",
+                         type="primary", key="btn_advance_manual", use_container_width=True):
+                with st.spinner("Aplicando decisões e re-executando motor..."):
+                    df_bnk, df_fin = apply_review_decisions(df_bnk, df_fin, cards)
+                    df_bnk, df_fin = _release_all_revisar(df_bnk, df_fin)
+                    if params is not None:
+                        df_bnk, df_fin = run_engine(df_bnk, df_fin, params, include_partial=False)
+                    st.session_state["df_bnk"]      = df_bnk
+                    st.session_state["df_fin"]       = df_fin
+                    st.session_state["review_phase"] = "D"
+                    st.session_state.pop("manual_sel_bnk", None)
+                st.rerun()
+        with col_skip:
+            if st.button("Pular para Download", key="btn_skip_download", use_container_width=True):
+                st.session_state["review_phase"] = "done"
+                st.rerun()
+
+    # ── Fase D — Conciliador manual ───────────────────────────────────────────
+    elif phase == "D":
+        if params is None:
+            st.error("Parâmetros não encontrados. Volte à Etapa 7.")
+            return
+        df_bnk, df_fin, finished = step_manual_conciliator(df_bnk, df_fin, params)
+        st.session_state["df_bnk"] = df_bnk
+        st.session_state["df_fin"] = df_fin
+        if finished:
+            st.session_state["review_phase"] = "done"
+            st.rerun()
+
+    # ── Fase done — Download ──────────────────────────────────────────────────
+    elif phase == "done":
+        _metrics_bar(df_bnk)
+        st.divider()
+        _render_download_section(df_bnk, df_fin)
+
+    # ── Nova contabilização (sempre disponível) ───────────────────────────────
     st.divider()
     if st.button("Nova contabilização", key="btn_nova"):
         for k in [
@@ -851,7 +881,7 @@ def _etapa_revisao_download():
             "extrato_mapping", "fin_mapping", "fin2_mapping",
             "fin_modalidade_str", "params", "balance_warning",
             "_norm_bnk_fp", "_norm_fin_fp", "performance_timings",
-            "agent_report",
+            "agent_report", "review_phase", "manual_sel_bnk",
             "cliente_conciliacao", "cliente_conciliacao_id",
             "cliente_conciliacao_select", "conta_banco_conciliacao",
             "conta_banco_conciliacao_input", "cliente_conta_banco_ref",

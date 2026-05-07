@@ -14,8 +14,10 @@ class ConciliacaoParams:
     # find_combos usa MITM quando C(n,k) > 10.000, mantendo custo O(2^(n/2))
     # independente de max_group_size, então o cap não precisa ser adaptativo.
     max_candidates_per_group: int = 40
-    # Teto especifico para N:1. Mantem grupos de muitos lancamentos bancarios
-    # sob controle e evita travar a interface em subset-sum grande.
+    # Teto de candidatos para N:1 na Fase 2 (k≥3). 0 = sem limite.
+    # A Fase 1 (k=2) usa sempre todos os candidatos, garantindo captura de
+    # pares assimétricos (ex: 19.328 + 3.900 = 23.228) independente deste valor.
+    # O combo_timeout_sec é o guardião de performance para grupos patológicos.
     n_to_one_max_candidates: int = 30
     value_tolerance_cents: int = 0
     # Timeout em segundos por chamada find_combos (0 = desabilitado).

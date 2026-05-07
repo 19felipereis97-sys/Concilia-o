@@ -59,6 +59,7 @@ def find_combos(
     tol: float,
     max_k: int,
     deadline: Optional[float] = None,
+    stop_after_first_k: bool = False,
 ) -> List[Tuple[int, ...]]:
     """
     Retorna até 2 tuplas de índices em `vals` cuja soma ≈ target ± tol.
@@ -108,6 +109,8 @@ def find_combos(
                 new = _brute_k(sv, n, k, abs_target_c, tol_c, prefix, deadline)
 
             matches_internal.extend(new)
+            if stop_after_first_k and new:
+                break
             if len(matches_internal) > 1:
                 break
     except _TimeoutExceeded:

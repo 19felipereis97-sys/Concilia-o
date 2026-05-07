@@ -72,6 +72,120 @@ def _to_float(v) -> object:
     return float(v) if isinstance(v, Decimal) else v
 
 
+def _display_status(status: object) -> str:
+    s = str(status or "").strip()
+    labels = {
+        STATUS_CONCILIADO: "Conciliado",
+        STATUS_CONCILIADO_MANUAL: "Conciliado manual",
+        STATUS_REVISAR: "A revisar",
+        STATUS_REVISAR_COLISAO: "A revisar - colisao",
+        STATUS_IGNORADO_SEM_PAR: "Sem par financeiro",
+        STATUS_SEM_PAREAMENTO: "Sem pareamento",
+        STATUS_IGNORADO_USUARIO: "Ignorado pelo usuario",
+        STATUS_PARCIAL: "Parcialmente conciliado",
+        STATUS_PENDENTE_PARCIAL: "Pendente parcial",
+    }
+    return labels.get(s, s)
+
+
+def _display_metodo(metodo: object) -> str:
+    m = str(metodo or "").strip()
+    if not m:
+        return ""
+    if m == "manual":
+        return "Manual"
+    if m == "manual:ignorado":
+        return "Ignorado manualmente"
+    if m.startswith("fora_confronto_recebimento"):
+        return "Fora do confronto - recebimento"
+    if m.startswith("fora_confronto_pagamento"):
+        return "Fora do confronto - pagamento"
+    if m.startswith("pendente:"):
+        return "Pendente de conciliacao parcial"
+    if m.startswith("bloqueado:"):
+        return "Bloqueado para revisao"
+    if "ambiguo" in m:
+        if m.startswith("N:1"):
+            return "Ambiguo - varios bancos para um financeiro"
+        if "parcial" in m:
+            return "Ambiguo - parcial"
+        return "Ambiguo - um banco para varios financeiros"
+    if "grupo grande" in m or "grupo limitado" in m:
+        return "Limite de combinacoes atingido"
+    if "tempo esgotado" in m:
+        return "Tempo de busca esgotado"
+    if m.startswith("1:1 D") and m != "1:1 D":
+        return "Exato com variacao de data"
+    if m == "1:1 D":
+        return "Exato no dia"
+    if m.startswith("1:N Dvar soma"):
+        return _append_soma("Um banco para varios financeiros com variacao de data", m)
+    if m.startswith("1:N D parcial soma"):
+        return _append_soma("Parcial um banco para varios financeiros", m)
+    if m.startswith("1:N D soma"):
+        return _append_soma("Um banco para varios financeiros", m)
+    if m.startswith("N:1 revisao_unica soma"):
+        return _append_soma("Varios bancos para um financeiro - revisao unica", m)
+    if m.startswith("1:N D revisao_unica soma"):
+        return _append_soma("Um banco para varios financeiros - revisao unica", m)
+    if m.startswith("N:1 soma"):
+        return _append_soma("Varios bancos para um financeiro", m)
+    return m
+
+
+def _append_soma(label: str, metodo: str) -> str:
+    try:
+        qtd = str(metodo).split("soma=", 1)[1].split()[0]
+    except Exception:
+        qtd = ""
+    return f"{label} ({qtd} itens)" if qtd else label
+
+
+def _display_tipo_conciliacao(metodo: object, status: object = "") -> str:
+    m = str(metodo or "").strip()
+    s = str(status or "").strip()
+    if s == STATUS_REVISAR or s == STATUS_REVISAR_COLISAO or "ambiguo" in m:
+        return "Revisao manual"
+    if s == STATUS_SEM_PAREAMENTO:
+        return "Nao conciliado"
+    if s == STATUS_IGNORADO_SEM_PAR:
+        return "Financeiro sem par"
+    if s == STATUS_IGNORADO_USUARIO or m == "manual:ignorado":
+        return "Ignorado"
+    if s == STATUS_PARCIAL or "parcial soma" in m:
+        return "Parcial"
+    if s == STATUS_PENDENTE_PARCIAL or m.startswith("pendente:"):
+        return "Pendente parcial"
+    if m == "manual" or s == STATUS_CONCILIADO_MANUAL:
+        return "Manual"
+    if m.startswith("fora_confronto_"):
+        return "Fora do confronto"
+    if m.startswith("N:1"):
+        return "N:1"
+    if m.startswith("1:N"):
+        return "1:N"
+    if m.startswith("1:1"):
+        return "1:1"
+    if s == STATUS_CONCILIADO:
+        return "Conciliado"
+    return ""
+
+
+def _display_detail_header(col: str) -> str:
+    labels = {
+        "_id": "ID",
+        "_data": "Data",
+        "_valor": "Valor",
+        "_historico": "Historico",
+        "_classif": "Classificacao",
+        "_status": "Situacao",
+        "_metodo": "Criterio",
+        "_ids_fin": "IDs Financeiro",
+        "_id_bnk": "IDs Banco",
+    }
+    return labels.get(col, col)
+
+
 def build_report(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
@@ -232,8 +346,8 @@ def _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco):
     headers = [
         "Data", "Historico", "Valor", "Classificacao Financeira",
         "Historico Financeiro",
-        "Tipo Conciliacao",
-        "ID Banco", "ID Financeiro", "Metodo", "Status",
+        "Tipo",
+        "ID Banco", "ID Financeiro", "Criterio", "Situacao",
         "Debito", "Credito", "Status De x Para",
     ]
     ws.append(headers)
@@ -305,11 +419,11 @@ def _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco):
                     valor_val,
                     classif,
                     hist_fin,
-                    tipo_expand,
+                    _display_tipo_conciliacao(metodo, status),
                     str(row.get("_id", "")),
                     id_f,
-                    metodo,
-                    status,
+                    _display_metodo(metodo),
+                    _display_status(status),
                     debito,
                     credito,
                     status_depara,
@@ -351,11 +465,11 @@ def _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco):
                 valor_val,
                 classif,
                 hist_fin,
-                tipo,
+                _display_tipo_conciliacao(metodo, status),
                 str(row.get("_id", "")),
                 ids_fin_str,
-                metodo,
-                status,
+                _display_metodo(metodo),
+                _display_status(status),
                 debito,
                 credito,
                 status_depara,
@@ -373,7 +487,8 @@ def _build_extrato(wb, df_bnk):
     cols_base = ["_id", "_data", "_valor", "_historico", "_status", "_metodo", "_ids_fin"]
     extras = [c for c in df_bnk.columns if not c.startswith("_")]
     headers = cols_base + extras
-    ws.append(headers)
+    display_headers = [_display_detail_header(c) for c in headers]
+    ws.append(display_headers)
     for cell in ws[1]:
         cell.fill = _fill(COR_CABECALHO)
         cell.font = _header_font()
@@ -385,6 +500,10 @@ def _build_extrato(wb, df_bnk):
                 v = float(v)
             elif isinstance(v, datetime.datetime):
                 v = v.date()
+            elif c == "_status":
+                v = _display_status(v)
+            elif c == "_metodo":
+                v = _display_metodo(v)
             linha.append(v)
         ws.append(linha)
         _apply_date_format(ws)
@@ -396,7 +515,8 @@ def _build_financeiro(wb, df_fin):
     cols_base = ["_id", "_data", "_valor", "_historico", "_classif", "_status", "_metodo", "_id_bnk"]
     extras = [c for c in df_fin.columns if not c.startswith("_")]
     headers = cols_base + extras
-    ws.append(headers)
+    display_headers = [_display_detail_header(c) for c in headers]
+    ws.append(display_headers)
     for cell in ws[1]:
         cell.fill = _fill(COR_CABECALHO)
         cell.font = _header_font()
@@ -408,6 +528,10 @@ def _build_financeiro(wb, df_fin):
                 v = float(v)
             elif isinstance(v, datetime.datetime):
                 v = v.date()
+            elif c == "_status":
+                v = _display_status(v)
+            elif c == "_metodo":
+                v = _display_metodo(v)
             linha.append(v)
         ws.append(linha)
         _apply_date_format(ws)

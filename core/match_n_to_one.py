@@ -5,6 +5,12 @@ Caso típico: SISPAG agrupa vários pagamentos em um único lançamento no extra
 Executado somente após a passagem 1:1; portanto, todas as linhas bancárias e
 financeiras aqui presentes já são confirmadamente sem pareamento naquele passo.
 A análise combinatória considera exclusivamente o mesmo dia do extrato (sem D±2).
+
+Estratégia em duas fases:
+  Fase 1 — k=2 com TODOS os candidatos (O(n²) instantâneo). Garante captura de
+  pares assimétricos como A+B=D que seriam excluídos pelo limite de candidatos.
+  Fase 2 — k≥3 com candidatos limitados (n_to_one_max_candidates), protegida
+  pelo combo_timeout_sec para grupos patológicos.
 """
 from __future__ import annotations
 import time
@@ -15,7 +21,7 @@ import pandas as pd
 
 from .normalize import (
     STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
-    STATUS_CONCILIADO, STATUS_REVISAR, STATUS_PENDENTE_PARCIAL,
+    STATUS_CONCILIADO, STATUS_REVISAR,
 )
 from .params import ConciliacaoParams
 from .combo_search import find_combos
@@ -31,19 +37,10 @@ def match_n_to_one(
     """
     Para cada linha financeira livre, busca combinações de linhas bancárias
     livres (mesma data, mesmo sinal) cuja soma bate com o valor financeiro.
-
-    Otimizações aplicadas:
-    - Dica 3: filtra candidatos cujo |valor| > |alvo| antes da combinatória.
-    - Dica 6: usa _valor_f (float pré-computado) sem chamar float() por linha.
-    - Pre-agrupa candidatos bancários por (data, sinal) — O(n) vs O(n²).
-    - Conjunto free_bnk atualizado incrementalmente com .discard().
-    - Pre-check de impossibilidade: pula grupo se soma total < alvo.
-    - Deadline por grupo: interrompe find_combos se demorar demais (MITM O(2^(n/2))).
-    - Combinatória delegada a combo_search.
     """
     tol = float(params.value_tolerance_cents) / 100
     use_deadline = params.combo_timeout_sec > 0
-    max_candidates = int(getattr(params, "n_to_one_max_candidates", 10) or 0)
+    max_candidates = int(getattr(params, "n_to_one_max_candidates", 30) or 0)
 
     _free_statuses = {STATUS_SEM_PAREAMENTO, *(extra_bnk_statuses or [])}
 
@@ -83,7 +80,6 @@ def match_n_to_one(
         abs_target = abs(target_f)
 
         # Candidatos bancários na mesma data e mesmo sinal, ainda livres
-        # Dica 3: descarta candidatos cujo |valor| > |alvo| (nunca entram numa soma válida)
         candidatos = [
             c for c in bnk_groups.get((row_f["_data"], sign), [])
             if c["_id"] in free_bnk and abs(c["_valor_f"]) <= abs_target + tol
@@ -95,6 +91,49 @@ def match_n_to_one(
         if sum(abs(c["_valor_f"]) for c in candidatos) < abs_target - tol:
             continue
 
+        # ── Fase 1: k=2 com TODOS os candidatos ──────────────────────────────
+        # C(n,2) ≤ C(98,2)=4.753 < MITM_THRESHOLD → brute-force instantâneo.
+        # Captura pares assimétricos (ex: 19.328 + 3.900 = 23.228) que seriam
+        # excluídos pelo limite de candidatos da fase 2.
+        all_vals = [c["_valor_f"] for c in candidatos]
+        phase1_matches = find_combos(all_vals, target_f, tol, max_k=2)
+
+        if phase1_matches:
+            if len(phase1_matches) == 1:
+                combo_rows = [candidatos[i] for i in phase1_matches[0]]
+                ids_bnk = [r["_id"] for r in combo_rows]
+                metodo = f"N:1 soma={len(ids_bnk)}"
+                for r in combo_rows:
+                    bi = bnk_pos[r["_id"]]
+                    df_bnk.at[bi, "_status"] = STATUS_CONCILIADO
+                    df_bnk.at[bi, "_metodo"] = metodo
+                    df_bnk.at[bi, "_ids_fin"] = row_f["_id"]
+                    free_bnk.discard(r["_id"])
+                df_fin.at[fi, "_status"] = STATUS_CONCILIADO
+                df_fin.at[fi, "_metodo"] = metodo
+                df_fin.at[fi, "_id_bnk"] = ";".join(ids_bnk)
+            else:
+                # Múltiplos pares k=2 → ambiguidade real
+                ids_bloqueados = {
+                    candidatos[i]["_id"]
+                    for match in phase1_matches
+                    for i in match
+                }
+                for c in candidatos:
+                    bi = bnk_pos[c["_id"]]
+                    if c["_id"] in ids_bloqueados and df_bnk.at[bi, "_status"] in _free_statuses:
+                        df_bnk.at[bi, "_status"] = STATUS_REVISAR
+                        df_bnk.at[bi, "_metodo"] = "N:1 ambiguo"
+                        df_bnk.at[bi, "_ids_fin"] = row_f["_id"]
+                        free_bnk.discard(c["_id"])
+                df_fin.at[fi, "_status"] = STATUS_REVISAR
+                df_fin.at[fi, "_metodo"] = "bloqueado:N:1 ambiguo"
+                df_fin.at[fi, "_id_bnk"] = ";".join(sorted(ids_bloqueados))
+            continue
+
+        # ── Fase 2: k≥3 com candidatos limitados ─────────────────────────────
+        # Fase 1 já descartou k=2; aqui buscamos grupos maiores com o guardião
+        # de performance (max_candidates + deadline).
         candidatos_busca, limited = limit_subset_candidates(
             candidatos,
             target_f,
@@ -107,7 +146,14 @@ def match_n_to_one(
         vals = [c["_valor_f"] for c in candidatos_busca]
         deadline = time.monotonic() + params.combo_timeout_sec if use_deadline else None
         search_start = time.monotonic()
-        matches = find_combos(vals, target_f, tol, params.max_group_size, deadline=deadline)
+        matches = find_combos(
+            vals,
+            target_f,
+            tol,
+            params.max_group_size,
+            deadline=deadline,
+            stop_after_first_k=True,
+        )
         timed_out = use_deadline and (time.monotonic() - search_start) >= (params.combo_timeout_sec * 0.95)
 
         if not matches:
@@ -123,28 +169,49 @@ def match_n_to_one(
             combo_rows = [candidatos_busca[i] for i in matches[0]]
             ids_bnk = [r["_id"] for r in combo_rows]
             metodo = f"N:1 soma={len(ids_bnk)}"
-
             for r in combo_rows:
                 bi = bnk_pos[r["_id"]]
                 df_bnk.at[bi, "_status"] = STATUS_CONCILIADO
                 df_bnk.at[bi, "_metodo"] = metodo
                 df_bnk.at[bi, "_ids_fin"] = row_f["_id"]
                 free_bnk.discard(r["_id"])
-
             df_fin.at[fi, "_status"] = STATUS_CONCILIADO
             df_fin.at[fi, "_metodo"] = metodo
             df_fin.at[fi, "_id_bnk"] = ";".join(ids_bnk)
         else:
-            seen = set()
-            for combo_idx in matches:
-                for i in combo_idx:
-                    rid = candidatos_busca[i]["_id"]
-                    if rid in seen:
-                        continue
-                    seen.add(rid)
-                    bi = bnk_pos[rid]
-                    if df_bnk.at[bi, "_status"] in _free_statuses:
+            # Múltiplos combos encontrados. Preferir o único combo de menor k.
+            min_k = min(len(m) for m in matches)
+            min_k_matches = [m for m in matches if len(m) == min_k]
+
+            if len(min_k_matches) == 1:
+                combo_rows = [candidatos_busca[i] for i in min_k_matches[0]]
+                ids_bnk = [r["_id"] for r in combo_rows]
+                metodo = f"N:1 soma={len(ids_bnk)}"
+                for r in combo_rows:
+                    bi = bnk_pos[r["_id"]]
+                    df_bnk.at[bi, "_status"] = STATUS_CONCILIADO
+                    df_bnk.at[bi, "_metodo"] = metodo
+                    df_bnk.at[bi, "_ids_fin"] = row_f["_id"]
+                    free_bnk.discard(r["_id"])
+                df_fin.at[fi, "_status"] = STATUS_CONCILIADO
+                df_fin.at[fi, "_metodo"] = metodo
+                df_fin.at[fi, "_id_bnk"] = ";".join(ids_bnk)
+            else:
+                # Múltiplos combos no mesmo k → ambiguidade real
+                ids_bloqueados = {
+                    candidatos_busca[i]["_id"]
+                    for match in min_k_matches
+                    for i in match
+                }
+                for c in candidatos:
+                    bi = bnk_pos[c["_id"]]
+                    if c["_id"] in ids_bloqueados and df_bnk.at[bi, "_status"] in _free_statuses:
                         df_bnk.at[bi, "_status"] = STATUS_REVISAR
                         df_bnk.at[bi, "_metodo"] = "N:1 ambiguo"
+                        df_bnk.at[bi, "_ids_fin"] = row_f["_id"]
+                        free_bnk.discard(c["_id"])
+                df_fin.at[fi, "_status"] = STATUS_REVISAR
+                df_fin.at[fi, "_metodo"] = "bloqueado:N:1 ambiguo"
+                df_fin.at[fi, "_id_bnk"] = ";".join(sorted(ids_bloqueados))
 
     return df_bnk, df_fin

@@ -64,7 +64,13 @@ def match_partial_one_to_n(
 
     free_fin: set = set(df_fin.loc[df_fin["_status"] == STATUS_IGNORADO_SEM_PAR, "_id"])
 
-    bnk_free_df = df_bnk[df_bnk["_status"] == STATUS_SEM_PAREAMENTO]
+    # Exclui entradas onde o N:1 já tentou e não concluiu (timeout / grupo limitado).
+    # Essas entradas ficam SEM_PAREAMENTO mas não devem ir para parcial —
+    # não são ambiguidade, são apenas casos que o N:1 não terminou de avaliar.
+    bnk_free_df = df_bnk[
+        (df_bnk["_status"] == STATUS_SEM_PAREAMENTO) &
+        ~df_bnk["_metodo"].str.startswith("N:1", na=False)
+    ]
     bnk_cols = ["_id", "_data", "_valor", "_valor_f", "_historico"] if "_valor_f" in df_bnk.columns \
         else ["_id", "_data", "_valor", "_historico"]
 
@@ -113,8 +119,21 @@ def match_partial_one_to_n(
         if len(combos) > 1:
             # Ambiguidade → revisão manual
             if df_bnk.at[bi, "_status"] == STATUS_SEM_PAREAMENTO:
+                ids_bloqueados = {
+                    candidatos_busca[i]["_id"]
+                    for combo in combos
+                    for i in combo
+                }
                 df_bnk.at[bi, "_status"] = STATUS_REVISAR
                 df_bnk.at[bi, "_metodo"] = "1:N D parcial ambiguo"
+                df_bnk.at[bi, "_ids_fin"] = ";".join(sorted(ids_bloqueados))
+                for id_f in ids_bloqueados:
+                    fi = fin_pos.get(id_f)
+                    if fi is not None and df_fin.at[fi, "_status"] == STATUS_IGNORADO_SEM_PAR:
+                        df_fin.at[fi, "_status"] = STATUS_REVISAR
+                        df_fin.at[fi, "_metodo"] = "bloqueado:1:N D parcial ambiguo"
+                        df_fin.at[fi, "_id_bnk"] = row_b["_id"]
+                        free_fin.discard(id_f)
             continue
 
         # Combinação única
