@@ -209,6 +209,16 @@ def _migrate(con: sqlite3.Connection):
     if "departamento" not in cols_usr:
         con.execute("ALTER TABLE usuarios ADD COLUMN departamento TEXT NOT NULL DEFAULT ''")
 
+    # templates de conciliacao
+    cols_tpl = {r[1] for r in con.execute("PRAGMA table_info(conciliacao_templates)")}
+    if "criado_em" not in cols_tpl:
+        con.execute("ALTER TABLE conciliacao_templates ADD COLUMN criado_em TEXT NOT NULL DEFAULT ''")
+        con.execute(
+            """UPDATE conciliacao_templates
+               SET criado_em = COALESCE(NULLIF(atualizado_em, ''), datetime('now'))
+               WHERE TRIM(COALESCE(criado_em, '')) = ''"""
+        )
+
 
 def init_db():
     global _db_initialized
@@ -268,6 +278,7 @@ def init_db():
             nome TEXT NOT NULL DEFAULT 'Padrao',
             config_json TEXT NOT NULL,
             usuario TEXT NOT NULL DEFAULT '',
+            criado_em TEXT NOT NULL DEFAULT '',
             atualizado_em TEXT NOT NULL,
             UNIQUE(cliente_id, banco_nome, nome)
         );
@@ -914,7 +925,7 @@ def set_conta_banco(cliente_id: int, conta: str):
 def list_conciliacao_templates(cliente_id: int) -> List[dict]:
     with _conn() as con:
         rows = con.execute(
-            """SELECT id, cliente_id, banco_nome, nome, usuario, atualizado_em
+            """SELECT id, cliente_id, banco_nome, nome, usuario, criado_em, atualizado_em
                FROM conciliacao_templates
                WHERE cliente_id=?
                ORDER BY banco_nome COLLATE NOCASE, nome COLLATE NOCASE""",
@@ -926,7 +937,7 @@ def list_conciliacao_templates(cliente_id: int) -> List[dict]:
 def get_conciliacao_template(template_id: int) -> Optional[dict]:
     with _conn() as con:
         row = con.execute(
-            """SELECT id, cliente_id, banco_nome, nome, config_json, usuario, atualizado_em
+            """SELECT id, cliente_id, banco_nome, nome, config_json, usuario, criado_em, atualizado_em
                FROM conciliacao_templates
                WHERE id=?""",
             (template_id,),
@@ -955,13 +966,13 @@ def upsert_conciliacao_template(
     with _conn() as con:
         con.execute(
             """INSERT INTO conciliacao_templates
-                 (cliente_id, banco_nome, nome, config_json, usuario, atualizado_em)
-               VALUES (?, ?, ?, ?, ?, ?)
+                 (cliente_id, banco_nome, nome, config_json, usuario, criado_em, atualizado_em)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(cliente_id, banco_nome, nome) DO UPDATE SET
                  config_json=excluded.config_json,
                  usuario=excluded.usuario,
                  atualizado_em=excluded.atualizado_em""",
-            (cliente_id, banco_nome, nome, payload, usuario, now),
+            (cliente_id, banco_nome, nome, payload, usuario, now, now),
         )
         row = con.execute(
             """SELECT id FROM conciliacao_templates
@@ -974,6 +985,41 @@ def upsert_conciliacao_template(
 def delete_conciliacao_template(template_id: int) -> None:
     with _conn() as con:
         con.execute("DELETE FROM conciliacao_templates WHERE id=?", (template_id,))
+
+
+def list_banco_templates(cliente_id: int) -> List[dict]:
+    """Lista templates de banco (exclui o template financeiro reservado)."""
+    return [
+        t for t in list_conciliacao_templates(cliente_id)
+        if t.get("banco_nome") != "__financeiro__"
+    ]
+
+
+def list_fin_templates(cliente_id: int) -> List[dict]:
+    """Lista templates financeiros da empresa."""
+    return [
+        t for t in list_conciliacao_templates(cliente_id)
+        if t.get("banco_nome") == "__financeiro__"
+    ]
+
+
+def get_fin_template(cliente_id: int) -> Optional[dict]:
+    """Retorna o template financeiro único da empresa."""
+    with _conn() as con:
+        row = con.execute(
+            """SELECT id, config_json FROM conciliacao_templates
+               WHERE cliente_id=? AND banco_nome='__financeiro__'
+               ORDER BY atualizado_em DESC, id DESC
+               LIMIT 1""",
+            (cliente_id,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        config = json.loads(row["config_json"] or "{}")
+    except Exception:
+        config = {}
+    return {"id": int(row["id"]), "config": config}
 
 
 # -- Logs -------------------------------------------------------------------------

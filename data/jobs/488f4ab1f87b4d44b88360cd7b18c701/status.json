@@ -1,0 +1,8 @@
+{
+  "job_id": "488f4ab1f87b4d44b88360cd7b18c701",
+  "status": "done",
+  "message": "Conciliacao concluida. Relatorio pode ser gerado mesmo com pendencias.",
+  "updated_at": 1778705161.1889398,
+  "progress": 100,
+  "stage": "relatorio"
+}

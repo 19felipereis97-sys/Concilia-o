@@ -9,14 +9,20 @@
     "param_offsets": "Offsets de data a considerar (em dias). Ex.: 0,1,-1,2,-2 = mesmo dia, +1, -1, +2, -2.",
     "param_discard": "Padrões de histórico bancário a ignorar (um por linha). Lançamentos com esses textos são excluídos do confronto."
   },
-  "extrato_sheet": "Lançamentos",
-  "extrato_skip": 9,
-  "extrato_suffix": ".xlsx",
-  "fin_sheet": "financas",
-  "fin_skip": 2,
+  "extrato_sheet": "Itaú",
+  "extrato_skip": 0,
+  "extrato_suffix": ".xls",
+  "fin_sheet": "Plan1",
+  "fin_skip": 0,
   "fin_suffix": ".xlsx",
-  "fin_modalidade_str": "COMPLETO",
+  "fin_modalidade_str": "PAGAMENTOS",
   "default_year": 2026,
+  "bnk_col_data": "Data Lançamento",
+  "bnk_col_hist": [
+    "Descrição Histórico"
+  ],
+  "bnk_valor_mod": "Coluna única (com sinal)",
+  "bnk_col_valor": "Valor Lançamento",
   "param_tol": 0,
   "param_group": 9999,
   "param_max_candidates": 9999,
@@ -26,36 +32,35 @@
   "param_offsets": "0,1,-1,2,-2",
   "param_discard": "SDO\nSALDO\nS/D\nSALDO ANTERIOR\nSALDO DO DIA",
   "extrato_mapping": {
-    "col_data": "Data",
+    "col_data": "Data Lançamento",
     "col_historico": [
-      "Lançamento",
-      "Razão Social"
+      "Descrição Histórico"
     ],
     "valor_modalidade": "coluna_unica",
-    "col_valor": "Valor (R$)",
+    "col_valor": "Valor Lançamento",
     "col_debito": null,
     "col_credito": null,
     "col_id": null,
     "colunas_extras": [],
-    "skip_rows": 9,
-    "sheet_name": "Lançamentos"
+    "skip_rows": 0,
+    "sheet_name": "Itaú"
   },
   "fin_mapping": {
-    "col_data": "Data",
+    "col_data": "DT_PAG",
     "col_historico": [
-      "Cliente ou Fornecedor",
-      "Categoria"
+      "Razao",
+      "NUM_DUP"
     ],
     "valor_modalidade": "coluna_unica",
-    "col_valor": "Valor (R$)",
+    "col_valor": "VALOR_PAG",
     "col_debito": null,
     "col_credito": null,
     "col_id": null,
-    "col_classificacao": "Categoria",
+    "col_classificacao": "COD_CENTROCUSTO",
     "colunas_extras": [],
-    "skip_rows": 2,
-    "sheet_name": "financas",
-    "modalidade": "completo",
+    "skip_rows": 0,
+    "sheet_name": "Plan1",
+    "modalidade": "pagamentos",
     "hist_prefix": "",
     "hist_separator": " - "
   }

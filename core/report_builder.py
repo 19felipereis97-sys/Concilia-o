@@ -298,12 +298,17 @@ def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco, hist_mode="B
 
         if is_expandable:
             ids_fin = [x.strip() for x in ids_fin_str.split(";") if x.strip()]
-            for id_f in ids_fin:
-                fin_row = fin_by_id.get(id_f)
-                if fin_row is None:
-                    continue
+            bnk_valor = _to_float(row.get("_valor", ""))
+            valid_fins = [(id_f, fin_by_id[id_f]) for id_f in ids_fin if id_f in fin_by_id]
+            acumulado = 0.0
+            for idx, (id_f, fin_row) in enumerate(valid_fins):
+                is_last = (idx == len(valid_fins) - 1)
                 classif = str(fin_row.get("_classif", "")).strip()
-                valor_val = _to_float(fin_row.get("_valor", ""))
+                if is_last:
+                    valor_val = round(bnk_valor - acumulado, 2)
+                else:
+                    valor_val = _to_float(fin_row.get("_valor", ""))
+                    acumulado += valor_val
                 debito, credito, _ = aplicar_depara_contabil_indexed(
                     classif, valor_val, depara_index, conta_banco,
                 )
@@ -398,13 +403,17 @@ def _build_consolidado(wb, df_bnk, df_fin, depara_index, conta_banco):
             else:
                 tipo_expand = "Manual"
             ids_fin = [x.strip() for x in ids_fin_str.split(";") if x.strip()]
-            for id_f in ids_fin:
-                fin_row = fin_by_id.get(id_f)
-                if fin_row is None:
-                    continue
-
+            bnk_valor = _to_float(row.get("_valor", ""))
+            valid_fins = [(id_f, fin_by_id[id_f]) for id_f in ids_fin if id_f in fin_by_id]
+            acumulado = 0.0
+            for idx, (id_f, fin_row) in enumerate(valid_fins):
+                is_last = (idx == len(valid_fins) - 1)
                 classif = str(fin_row.get("_classif", "")).strip()
-                valor_val = _to_float(fin_row.get("_valor", ""))
+                if is_last:
+                    valor_val = round(bnk_valor - acumulado, 2)
+                else:
+                    valor_val = _to_float(fin_row.get("_valor", ""))
+                    acumulado += valor_val
                 debito, credito, status_depara = aplicar_depara_contabil_indexed(
                     classif,
                     valor_val,

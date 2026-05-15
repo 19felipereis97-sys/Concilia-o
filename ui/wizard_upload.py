@@ -69,6 +69,9 @@ def step_upload_extrato():
         st.session_state["extrato_name"] = file.name
         st.success(f"Arquivo carregado: {file.name}")
         return True
+    if st.session_state.get("extrato_file"):
+        st.info(f"Arquivo em uso: **{st.session_state.get('extrato_name', 'extrato')}**")
+        return True
     return False
 
 

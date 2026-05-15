@@ -34,6 +34,7 @@ def match_one_to_n(
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
     offsets: Optional[List[int]] = None,
+    fin_pos: Optional[dict] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     offsets: deslocamentos de data a considerar para os candidatos financeiros.
@@ -57,7 +58,7 @@ def match_one_to_n(
     tol = float(params.value_tolerance_cents) / 100
     use_deadline = params.combo_timeout_sec > 0
 
-    fin_pos = dict(zip(df_fin["_id"], df_fin.index))
+    fin_pos = fin_pos if fin_pos is not None else dict(zip(df_fin["_id"], df_fin.index))
 
     # Pré-agrupa financeiros livres por (data, sinal)
     fin_groups: dict = defaultdict(list)
@@ -115,7 +116,6 @@ def match_one_to_n(
             tol,
             params.max_group_size,
             deadline=deadline,
-            stop_after_first_k=True,
         )
         timed_out = use_deadline and (time.monotonic() - search_start) >= (params.combo_timeout_sec * 0.95)
 

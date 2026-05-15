@@ -23,7 +23,8 @@ from plan.client_store import (
     update_depara_batch, import_depara_stream,
     get_cliente_by_id, get_clientes_do_grupo, replicate_depara,
     get_conta_banco, set_conta_banco,
-    list_conciliacao_templates, get_conciliacao_template, delete_conciliacao_template,
+    get_conciliacao_template, delete_conciliacao_template,
+    list_banco_templates, get_fin_template,
     log_acao, log_depara_change, change_password,
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
@@ -50,7 +51,7 @@ from ui.manual_conciliator import step_manual_conciliator
 from ui.components import progress_bar
 from ui.login import show_login, show_change_password_required
 from ui.admin import show_admin_panel
-from core.wizard_persistence import apply_wizard_config, apply_wizard_config_data
+from core.wizard_persistence import apply_wizard_config, apply_wizard_config_data, apply_fin_config_data
 
 init_db()
 
@@ -105,7 +106,8 @@ def _normalizar_extrato_incremental(params: ConciliacaoParams | None = None) -> 
         return  # cache hit — df_bnk já é válido
 
     ext_mapping = st.session_state.get("extrato_mapping")
-    if ext_mapping is None:
+    extrato_file = st.session_state.get("extrato_file")
+    if ext_mapping is None or extrato_file is None:
         return
 
     norm_params = ConciliacaoParams(
@@ -115,7 +117,7 @@ def _normalizar_extrato_incremental(params: ConciliacaoParams | None = None) -> 
     )
     t0 = time.perf_counter()
     df_bnk = normalize_extrato(
-        io.BytesIO(st.session_state["extrato_file"]),
+        io.BytesIO(extrato_file),
         ext_mapping,
         norm_params,
         suffix=st.session_state.get("extrato_suffix", ".xlsx"),
@@ -135,7 +137,8 @@ def _normalizar_financeiro_incremental(params: ConciliacaoParams | None = None) 
         return  # cache hit
 
     fin_mapping = st.session_state.get("fin_mapping")
-    if fin_mapping is None:
+    fin_file = st.session_state.get("fin_file")
+    if fin_mapping is None or fin_file is None:
         return
 
     norm_params = ConciliacaoParams(
@@ -146,7 +149,7 @@ def _normalizar_financeiro_incremental(params: ConciliacaoParams | None = None) 
 
     t0 = time.perf_counter()
     df_fin = normalize_financeiro(
-        io.BytesIO(st.session_state["fin_file"]),
+        io.BytesIO(fin_file),
         fin_mapping,
         norm_params,
         suffix=st.session_state.get("fin_suffix", ".xlsx"),
@@ -155,10 +158,11 @@ def _normalizar_financeiro_incremental(params: ConciliacaoParams | None = None) 
 
     if modalidade_str == "SEPARADOS":
         fin2_mapping = st.session_state.get("fin2_mapping")
-        if fin2_mapping:
+        fin2_file = st.session_state.get("fin2_file")
+        if fin2_mapping and fin2_file:
             t0 = time.perf_counter()
             df_fin2 = normalize_financeiro(
-                io.BytesIO(st.session_state["fin2_file"]),
+                io.BytesIO(fin2_file),
                 fin2_mapping,
                 norm_params,
                 suffix=st.session_state.get("fin2_suffix", ".xlsx"),
@@ -290,7 +294,7 @@ def sidebar() -> str:
         inicial = (nome or email)[0].upper() if (nome or email) else "?"
         display_name = nome if nome else email
         depto_html = (
-            f"<div style='font-size:0.72em;color:#888;margin-top:3px;"
+            f"<div style='font-size:0.72em;color:rgba(120,120,120,0.95);margin-top:3px;"
             f"letter-spacing:0.06em;text-transform:uppercase'>{depto}</div>"
             if depto else ""
         )
@@ -299,9 +303,9 @@ def sidebar() -> str:
             f"""
             <div style="display:flex;flex-direction:column;align-items:center;
                         padding:14px 10px 16px;margin-bottom:2px;
-                        background:rgba(255,255,255,0.04);
+                        background:var(--secondary-background-color);
                         border-radius:14px;
-                        border:1px solid rgba(255,255,255,0.07);
+                        border:1px solid rgba(120,120,120,0.18);
                         gap:8px;">
                 <div style="width:54px;height:54px;border-radius:50%;
                             background:linear-gradient(135deg,{cor},{cor}99);
@@ -311,7 +315,7 @@ def sidebar() -> str:
                     {inicial}
                 </div>
                 <div style="text-align:center;line-height:1.35;">
-                    <div style="font-weight:700;font-size:0.88em;color:#e8e8e8;
+                    <div style="font-weight:700;font-size:0.88em;color:var(--text-color);
                                 letter-spacing:0.04em;text-transform:uppercase;">
                         {display_name}
                     </div>
@@ -348,13 +352,18 @@ def sidebar() -> str:
 
 # ── Helpers visuais ────────────────────────────────────────────────────────────
 
+def _brl(value: float) -> str:
+    """Formata número no padrão brasileiro: R$ 1.234,56"""
+    return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def _value_card(label: str, value: float):
     """Card colorido: verde para valores >= 0, vermelho para negativos."""
     if value >= 0:
         color, bg = "#21C354", "#21C35418"
     else:
         color, bg = "#FF4B4B", "#FF4B4B18"
-    fmt = f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    fmt = _brl(value)
     st.markdown(
         f"""<div style="background:{bg};border-left:5px solid {color};
         padding:14px 18px;border-radius:8px;margin-bottom:10px;">
@@ -388,21 +397,21 @@ def _render_balance_comparison(bw: dict):
             if bw["diverge_deb"]:
                 diff = bw["bnk_deb"] - bw["fin_neg"]
                 _value_card(
-                    f"Δ Saídas — Banco R$ {bw['bnk_deb']:,.2f}  ×  Financeiro R$ {bw['fin_neg']:,.2f}",
+                    f"Δ Saídas — Banco {_brl(bw['bnk_deb'])}  ×  Financeiro {_brl(bw['fin_neg'])}",
                     diff,
                 )
                 st.warning(
-                    f"Débitos bancários e pagamentos financeiros divergem em **R$ {abs(diff):,.2f}**. "
+                    f"Débitos bancários e pagamentos financeiros divergem em **{_brl(abs(diff))}**. "
                     "Verifique se os períodos ou arquivos correspondem."
                 )
             if bw["diverge_cre"]:
                 diff = bw["bnk_cre"] - bw["fin_pos"]
                 _value_card(
-                    f"Δ Entradas — Banco R$ {bw['bnk_cre']:,.2f}  ×  Financeiro R$ {bw['fin_pos']:,.2f}",
+                    f"Δ Entradas — Banco {_brl(bw['bnk_cre'])}  ×  Financeiro {_brl(bw['fin_pos'])}",
                     diff,
                 )
                 st.warning(
-                    f"Créditos bancários e recebimentos financeiros divergem em **R$ {abs(diff):,.2f}**. "
+                    f"Créditos bancários e recebimentos financeiros divergem em **{_brl(abs(diff))}**. "
                     "Verifique se os períodos ou arquivos correspondem."
                 )
 
@@ -452,9 +461,6 @@ def _step_cliente_conta_banco() -> bool:
     if cliente_id and conta_banco:
         set_conta_banco(cliente_id, conta_banco)
 
-    if cliente_id:
-        _render_template_selector(cliente_id)
-
     if not cliente_id:
         st.warning("Selecione um cliente válido para vincular o De x Para.")
         return False
@@ -481,53 +487,107 @@ def _sync_tmp_keys_after_template() -> None:
         st.session_state.pop(key, None)
 
 
-def _render_template_selector(cliente_id: int) -> None:
-    templates = list_conciliacao_templates(cliente_id)
-    if not templates:
-        st.caption("Nenhum template salvo para este cliente ainda.")
-        return
+def _sync_fin_tmp_keys() -> None:
+    """Sincroniza apenas as chaves tmp_ do financeiro após auto-load de template."""
+    for tmp_key, src_key in (("tmp_fin_sheet", "fin_sheet"), ("tmp_fin_skip", "fin_skip"),
+                              ("tmp_fin2_sheet", "fin2_sheet"), ("tmp_fin2_skip", "fin2_skip")):
+        if src_key in st.session_state:
+            st.session_state[tmp_key] = st.session_state[src_key]
+    for key in ["df_fin", "_norm_fin_fp"]:
+        st.session_state.pop(key, None)
 
-    labels = {
-        t["id"]: (
-            f"{t['banco_nome'] or 'Sem banco'} / {t['nome']} "
-            f"- atualizado em {str(t['atualizado_em'])[:10]}"
-        )
-        for t in templates
-    }
-    col_tpl, col_apply, col_del = st.columns([4, 1, 1])
-    with col_tpl:
-        template_id = st.selectbox(
-            "Template salvo",
-            list(labels),
-            key="conc_template_id",
-            format_func=lambda tid: labels.get(tid, str(tid)),
-        )
-    with col_apply:
-        if st.button("Aplicar", key="conc_template_apply", use_container_width=True):
-            tpl = get_conciliacao_template(template_id)
-            if tpl and tpl.get("config"):
-                apply_wizard_config_data(st.session_state, tpl["config"], overwrite=True)
-                st.session_state["banco_layout_conciliacao"] = tpl.get("banco_nome", "")
-                _sync_tmp_keys_after_template()
+
+def _auto_load_fin_template(cliente_id: int) -> None:
+    """Carrega silenciosamente o template financeiro quando a empresa muda."""
+    ref_key = "_fin_tpl_loaded_for"
+    cid = int(cliente_id)
+    if st.session_state.get(ref_key) == cid:
+        return
+    tpl = get_fin_template(cid)
+    if tpl and tpl.get("config"):
+        apply_fin_config_data(st.session_state, tpl["config"], overwrite=True)
+        _sync_fin_tmp_keys()
+    st.session_state[ref_key] = cid
+
+
+def _fmt_template_date(iso_str: str) -> str:
+    """Converte 'YYYY-MM-DD...' para 'DD/MM/YYYY'."""
+    s = str(iso_str)[:10]
+    if len(s) == 10 and s[4] == "-":
+        return f"{s[8:10]}/{s[5:7]}/{s[:4]}"
+    return s
+
+
+def _render_template_selector(cliente_id: int) -> None:
+    """Mostra templates de banco salvos para o cliente (financeiro é auto-carregado)."""
+    # Resolve pendência de nome aplicado via "Aplicar" (não pode modificar widget já renderizado)
+    if "_banco_nome_pending" in st.session_state:
+        st.session_state["banco_layout_conciliacao"] = st.session_state.pop("_banco_nome_pending")
+
+    st.text_input(
+        "Nome do banco para o template de extrato",
+        key="banco_layout_conciliacao",
+        placeholder="Ex: Itaú Conta Corrente (deixe vazio para salvar como 'Principal')",
+        help="Identifica o template de mapeamento do extrato. Use nomes diferentes para bancos diferentes. O template é salvo automaticamente ao concluir a conciliação.",
+    )
+
+    templates = list_banco_templates(cliente_id)
+    st.markdown("**Templates de extrato bancário salvos**")
+    if not templates:
+        st.caption("Nenhum template de extrato salvo para este cliente ainda. Complete uma conciliação para salvar.")
+    else:
+        labels = {
+            t["id"]: (
+                f"{t['banco_nome'] or 'Sem banco'}"
+                f"  —  {_fmt_template_date(t.get('atualizado_em', ''))}"
+                f"  —  {t.get('usuario') or '—'}"
+            )
+            for t in templates
+        }
+        col_tpl, col_apply, col_del = st.columns([4, 1, 1])
+        with col_tpl:
+            template_id = st.selectbox(
+                "Template de banco",
+                list(labels),
+                key="conc_template_id",
+                format_func=lambda tid: labels.get(tid, str(tid)),
+                label_visibility="collapsed",
+            )
+        with col_apply:
+            if st.button("Aplicar", key="conc_template_apply", use_container_width=True):
+                tpl = get_conciliacao_template(template_id)
+                if tpl and tpl.get("config"):
+                    # Exclui banco_layout_conciliacao do apply (widget já renderizado —
+                    # seria StreamlitAPIException). Usamos _banco_nome_pending no lugar.
+                    cfg = {k: v for k, v in tpl["config"].items() if k != "banco_layout_conciliacao"}
+                    apply_wizard_config_data(st.session_state, cfg, overwrite=True)
+                    st.session_state["_banco_nome_pending"] = tpl.get("banco_nome", "")
+                    _sync_tmp_keys_after_template()
+                    log_acao(
+                        st.session_state.get("usuario_email", "desconhecido"),
+                        "TEMPLATE_BANCO_APLICADO",
+                        f"cliente_id={cliente_id};banco={tpl.get('banco_nome', '')}",
+                    )
+                    st.success(f"Template '{tpl.get('banco_nome')}' aplicado.")
+                    st.rerun()
+                else:
+                    st.error("Template vazio ou inválido.")
+        with col_del:
+            if st.button("Excluir", key="conc_template_delete", use_container_width=True):
+                delete_conciliacao_template(template_id)
                 log_acao(
                     st.session_state.get("usuario_email", "desconhecido"),
-                    "TEMPLATE_CONCILIACAO_APLICADO",
-                    f"cliente_id={cliente_id};template={tpl.get('nome', '')};banco={tpl.get('banco_nome', '')}",
+                    "TEMPLATE_BANCO_EXCLUIDO",
+                    f"cliente_id={cliente_id};template_id={template_id}",
                 )
-                st.success("Template aplicado ao wizard.")
+                st.success("Template excluído.")
                 st.rerun()
-            else:
-                st.error("Template vazio ou inválido.")
-    with col_del:
-        if st.button("Excluir", key="conc_template_delete", use_container_width=True):
-            delete_conciliacao_template(template_id)
-            log_acao(
-                st.session_state.get("usuario_email", "desconhecido"),
-                "TEMPLATE_CONCILIACAO_EXCLUIDO",
-                f"cliente_id={cliente_id};template_id={template_id}",
-            )
-            st.success("Template excluído.")
-            st.rerun()
+
+    fin_tpl = get_fin_template(cliente_id)
+    if fin_tpl:
+        st.caption("✅ Template financeiro salvo e carregado automaticamente para esta empresa.")
+    else:
+        st.caption("ℹ️ O template de mapeamento financeiro será salvo automaticamente ao concluir a primeira conciliação.")
 
 
 # ── Wizard de conciliação ──────────────────────────────────────────────────────
@@ -868,7 +928,9 @@ def _etapa_revisao_download():
 
     # ── Fase done — Download ──────────────────────────────────────────────────
     elif phase == "done":
-        _metrics_bar(df_bnk)
+        if st.button("↩ Voltar para Conciliação Manual", key="btn_volta_manual"):
+            st.session_state["review_phase"] = "D"
+            st.rerun()
         st.divider()
         _render_download_section(df_bnk, df_fin)
 

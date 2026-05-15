@@ -33,6 +33,7 @@ def match_n_to_one(
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
     extra_bnk_statuses: list | None = None,
+    bnk_pos: dict | None = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Para cada linha financeira livre, busca combinações de linhas bancárias
@@ -44,7 +45,7 @@ def match_n_to_one(
 
     _free_statuses = {STATUS_SEM_PAREAMENTO, *(extra_bnk_statuses or [])}
 
-    bnk_pos = dict(zip(df_bnk["_id"], df_bnk.index))
+    bnk_pos = bnk_pos if bnk_pos is not None else dict(zip(df_bnk["_id"], df_bnk.index))
 
     # Pré-agrupa linhas bancárias LIVRES por (data, sinal) — dica 6: usa _valor_f
     bnk_groups: dict = defaultdict(list)

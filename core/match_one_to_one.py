@@ -1,17 +1,15 @@
 """
 Conciliação 1:1 com suporte a janela de datas configurável.
 
-O chamador decide quais offsets tentar:
-  - offsets=[0]          → somente D0 (Passo 1 do motor)
-  - offsets=[-1,1,-2,2]  → variação de datas em cascata (Passo 3 do motor)
-
-Comportamento de cascata: para cada linha bancária, itera os offsets em ordem
-e para no primeiro que produzir algum candidato financeiro. Assim, D-1 é
-preferido a D+1, que é preferido a D-2, etc.
+Implementação vetorizada via pandas merge:
+  - _valor_f convertido para centavos inteiros (int64) → join exato sem risco
+    de igualdade em ponto flutuante e hashing mais rápido que Decimal.
+  - Cascata por offset: cada linha bancária usa o primeiro offset com candidatos.
+  - Linhas bancárias sem nenhum candidato permanecem intocadas.
+  - Retorna pending_pairs para resolve_collisions tratar colisões N→fin.
 """
 from __future__ import annotations
 import datetime
-from collections import defaultdict
 from typing import List, Optional, Tuple
 
 import pandas as pd
@@ -29,35 +27,45 @@ def match_one_to_one(
 ) -> Tuple[pd.DataFrame, pd.DataFrame, List[Tuple]]:
     """
     Retorna (df_bnk, df_fin, pending_pairs).
-    pending_pairs: lista de (id_bnk, id_fin, offset_k) para resolução de colisões.
-
-    offsets: lista de deslocamentos de data a tentar, em ordem de prioridade.
-             Padrão None usa params.date_offsets (comportamento legado).
-    extra_bnk_statuses: statuses adicionais de bancário considerados livres
-                        além de STATUS_SEM_PAREAMENTO (ex: STATUS_PENDENTE_PARCIAL).
+    pending_pairs: lista de (id_bnk, id_fin, offset_k) para resolve_collisions.
     """
     if offsets is None:
         offsets = params.date_offsets
 
     _free_statuses = {STATUS_SEM_PAREAMENTO, *(extra_bnk_statuses or [])}
 
-    # Índice: (data, valor) -> lista de id_fin livres
-    fin_index: dict = defaultdict(list)
-    for rec in df_fin[["_status", "_data", "_valor", "_id"]].to_dict("records"):
-        if rec["_status"] == STATUS_IGNORADO_SEM_PAR:
-            fin_index[(rec["_data"], rec["_valor"])].append(rec["_id"])
+    vf = "_valor_f" if "_valor_f" in df_fin.columns else "_valor"
+
+    fin_free = df_fin.loc[df_fin["_status"] == STATUS_IGNORADO_SEM_PAR, ["_id", "_data", vf]].copy()
+    bnk_free = df_bnk.loc[df_bnk["_status"].isin(_free_statuses), ["_id", "_data", vf]].copy()
+
+    if fin_free.empty or bnk_free.empty:
+        return df_bnk, df_fin, []
+
+    # Centavos inteiros: hashing de int64 >> Decimal, sem colisão de float
+    fin_free["_vc"] = (fin_free[vf].astype(float) * 100).round().astype("int64")
+    bnk_free["_vc"] = (bnk_free[vf].astype(float) * 100).round().astype("int64")
+
+    fin_lookup = fin_free[["_id", "_data", "_vc"]].rename(
+        columns={"_id": "_id_fin", "_data": "_data_s"}
+    )
 
     pending_pairs: List[Tuple] = []
+    matched_bnk: set = set()
 
-    for rec_b in df_bnk[["_status", "_id", "_data", "_valor"]].to_dict("records"):
-        if rec_b["_status"] not in _free_statuses:
+    for offset in offsets:
+        unmatched = bnk_free.loc[~bnk_free["_id"].isin(matched_bnk), ["_id", "_data", "_vc"]].copy()
+        if unmatched.empty:
+            break
+
+        unmatched["_data_s"] = unmatched["_data"] + datetime.timedelta(days=offset)
+        hits = unmatched[["_id", "_data_s", "_vc"]].merge(fin_lookup, on=["_data_s", "_vc"])
+
+        if hits.empty:
             continue
-        for offset in offsets:
-            search_date = rec_b["_data"] + datetime.timedelta(days=offset)
-            candidates = fin_index.get((search_date, rec_b["_valor"]), [])
-            if candidates:
-                for id_fin in candidates:
-                    pending_pairs.append((rec_b["_id"], id_fin, offset))
-                break  # cascata: encontrou candidatos neste offset, não avança
+
+        for rec in hits[["_id", "_id_fin"]].to_dict("records"):
+            pending_pairs.append((rec["_id"], rec["_id_fin"], offset))
+        matched_bnk.update(hits["_id"].unique())
 
     return df_bnk, df_fin, pending_pairs

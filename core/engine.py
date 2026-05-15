@@ -31,6 +31,11 @@ from .collision import resolve_collisions
 from .params import ConciliacaoParams
 from .combo_search import clear_cache
 
+def _any_free_bnk(df_bnk: pd.DataFrame) -> bool:
+    """True se ainda há linhas bancárias com STATUS_SEM_PAREAMENTO."""
+    return bool((df_bnk["_status"] == STATUS_SEM_PAREAMENTO).any())
+
+
 _ALL_STATUSES = [
     STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
     STATUS_CONCILIADO, STATUS_CONCILIADO_MANUAL,
@@ -68,26 +73,43 @@ def run_engine(
     df_bnk["_status"] = pd.Categorical(df_bnk["_status"], categories=_ALL_STATUSES)
     df_fin["_status"] = pd.Categorical(df_fin["_status"], categories=_ALL_STATUSES)
 
+    # Dicts de posição construídos uma única vez — IDs e índices são estáveis
+    # durante todas as passes (nenhuma linha é removida ou reindexada até o parcial).
+    bnk_pos = dict(zip(df_bnk["_id"], df_bnk.index))
+    fin_pos = dict(zip(df_fin["_id"], df_fin.index))
+
     # ── Passo 1: 1:1 D0 ──────────────────────────────────────────────────────
     _progress("1:1 D0 - pareamento exato no mesmo dia.", 20)
     df_bnk, df_fin, pairs_d0 = match_one_to_one(df_bnk, df_fin, params, offsets=[0])
-    df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_d0, params)
+    df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_d0, params, bnk_pos=bnk_pos, fin_pos=fin_pos)
+    if not _any_free_bnk(df_bnk):
+        _progress("Motor concluido antecipadamente.", 96)
+        return df_bnk, df_fin
 
     # ── Passo 2: 1:N D0 (fechamento total) ───────────────────────────────────
     _progress("1:N D0 - somas de financeiros no mesmo dia.", 32)
-    df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=[0])
+    df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=[0], fin_pos=fin_pos)
+    if not _any_free_bnk(df_bnk):
+        _progress("Motor concluido antecipadamente.", 96)
+        return df_bnk, df_fin
 
     # ── Passo 3: 1:1 D± (cascata D-1 > D+1 > D-2 > D+2) ────────────────────
     _progress("1:1 D+/- - pareamento exato com variacao de data.", 44)
     var_offsets = [k for k in params.date_offsets if k != 0]
     if var_offsets:
         df_bnk, df_fin, pairs_var = match_one_to_one(df_bnk, df_fin, params, offsets=var_offsets)
-        df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_var, params)
+        df_bnk, df_fin = resolve_collisions(df_bnk, df_fin, pairs_var, params, bnk_pos=bnk_pos, fin_pos=fin_pos)
+        if not _any_free_bnk(df_bnk):
+            _progress("Motor concluido antecipadamente.", 96)
+            return df_bnk, df_fin
 
     # ── Passo 4: 1:N D± (fechamento total, candidatos de datas distintas) ────
     if var_offsets:
         _progress("1:N D+/- - somas com variacao de data.", 56)
-        df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=var_offsets)
+        df_bnk, df_fin = match_one_to_n(df_bnk, df_fin, params, offsets=var_offsets, fin_pos=fin_pos)
+        if not _any_free_bnk(df_bnk):
+            _progress("Motor concluido antecipadamente.", 96)
+            return df_bnk, df_fin
 
     # ── Passo 5: N:1 D0 (N extratos = 1 financeiro, mesmo dia) ─────────────────
     # Executa em loop até convergência: entre iterações recoloca entradas REVISAR
@@ -100,7 +122,7 @@ def run_engine(
             df_bnk.loc[_n1_rev, "_status"] = STATUS_SEM_PAREAMENTO
             df_bnk.loc[_n1_rev, "_metodo"] = ""
             _prev = int((df_fin["_status"] == STATUS_CONCILIADO).sum())
-            df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params)
+            df_bnk, df_fin = match_n_to_one(df_bnk, df_fin, params, bnk_pos=bnk_pos)
             if int((df_fin["_status"] == STATUS_CONCILIADO).sum()) == _prev:
                 break
 
