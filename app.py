@@ -23,8 +23,6 @@ from plan.client_store import (
     update_depara_batch, import_depara_stream,
     get_cliente_by_id, get_clientes_do_grupo, replicate_depara,
     get_conta_banco, set_conta_banco,
-    get_conciliacao_template, delete_conciliacao_template,
-    list_banco_templates, get_fin_template,
     log_acao, log_depara_change, change_password,
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
@@ -51,7 +49,7 @@ from ui.manual_conciliator import step_manual_conciliator
 from ui.components import progress_bar
 from ui.login import show_login, show_change_password_required
 from ui.admin import show_admin_panel
-from core.wizard_persistence import apply_wizard_config, apply_wizard_config_data, apply_fin_config_data
+from core.wizard_persistence import apply_wizard_config
 
 init_db()
 
@@ -468,126 +466,6 @@ def _step_cliente_conta_banco() -> bool:
         st.warning("Informe a conta contábil do banco antes de avançar.")
         return False
     return True
-
-
-def _sync_tmp_keys_after_template() -> None:
-    pairs = {
-        "tmp_extrato_sheet": "extrato_sheet",
-        "tmp_extrato_skip": "extrato_skip",
-        "tmp_fin_sheet": "fin_sheet",
-        "tmp_fin_skip": "fin_skip",
-        "tmp_fin2_sheet": "fin2_sheet",
-        "tmp_fin2_skip": "fin2_skip",
-        "tmp_default_year": "default_year",
-    }
-    for tmp_key, source_key in pairs.items():
-        if source_key in st.session_state:
-            st.session_state[tmp_key] = st.session_state[source_key]
-    for key in ["df_bnk", "df_fin", "_norm_bnk_fp", "_norm_fin_fp", "params"]:
-        st.session_state.pop(key, None)
-
-
-def _sync_fin_tmp_keys() -> None:
-    """Sincroniza apenas as chaves tmp_ do financeiro após auto-load de template."""
-    for tmp_key, src_key in (("tmp_fin_sheet", "fin_sheet"), ("tmp_fin_skip", "fin_skip"),
-                              ("tmp_fin2_sheet", "fin2_sheet"), ("tmp_fin2_skip", "fin2_skip")):
-        if src_key in st.session_state:
-            st.session_state[tmp_key] = st.session_state[src_key]
-    for key in ["df_fin", "_norm_fin_fp"]:
-        st.session_state.pop(key, None)
-
-
-def _auto_load_fin_template(cliente_id: int) -> None:
-    """Carrega silenciosamente o template financeiro quando a empresa muda."""
-    ref_key = "_fin_tpl_loaded_for"
-    cid = int(cliente_id)
-    if st.session_state.get(ref_key) == cid:
-        return
-    tpl = get_fin_template(cid)
-    if tpl and tpl.get("config"):
-        apply_fin_config_data(st.session_state, tpl["config"], overwrite=True)
-        _sync_fin_tmp_keys()
-    st.session_state[ref_key] = cid
-
-
-def _fmt_template_date(iso_str: str) -> str:
-    """Converte 'YYYY-MM-DD...' para 'DD/MM/YYYY'."""
-    s = str(iso_str)[:10]
-    if len(s) == 10 and s[4] == "-":
-        return f"{s[8:10]}/{s[5:7]}/{s[:4]}"
-    return s
-
-
-def _render_template_selector(cliente_id: int) -> None:
-    """Mostra templates de banco salvos para o cliente (financeiro é auto-carregado)."""
-    # Resolve pendência de nome aplicado via "Aplicar" (não pode modificar widget já renderizado)
-    if "_banco_nome_pending" in st.session_state:
-        st.session_state["banco_layout_conciliacao"] = st.session_state.pop("_banco_nome_pending")
-
-    st.text_input(
-        "Nome do banco para o template de extrato",
-        key="banco_layout_conciliacao",
-        placeholder="Ex: Itaú Conta Corrente (deixe vazio para salvar como 'Principal')",
-        help="Identifica o template de mapeamento do extrato. Use nomes diferentes para bancos diferentes. O template é salvo automaticamente ao concluir a conciliação.",
-    )
-
-    templates = list_banco_templates(cliente_id)
-    st.markdown("**Templates de extrato bancário salvos**")
-    if not templates:
-        st.caption("Nenhum template de extrato salvo para este cliente ainda. Complete uma conciliação para salvar.")
-    else:
-        labels = {
-            t["id"]: (
-                f"{t['banco_nome'] or 'Sem banco'}"
-                f"  —  {_fmt_template_date(t.get('atualizado_em', ''))}"
-                f"  —  {t.get('usuario') or '—'}"
-            )
-            for t in templates
-        }
-        col_tpl, col_apply, col_del = st.columns([4, 1, 1])
-        with col_tpl:
-            template_id = st.selectbox(
-                "Template de banco",
-                list(labels),
-                key="conc_template_id",
-                format_func=lambda tid: labels.get(tid, str(tid)),
-                label_visibility="collapsed",
-            )
-        with col_apply:
-            if st.button("Aplicar", key="conc_template_apply", use_container_width=True):
-                tpl = get_conciliacao_template(template_id)
-                if tpl and tpl.get("config"):
-                    # Exclui banco_layout_conciliacao do apply (widget já renderizado —
-                    # seria StreamlitAPIException). Usamos _banco_nome_pending no lugar.
-                    cfg = {k: v for k, v in tpl["config"].items() if k != "banco_layout_conciliacao"}
-                    apply_wizard_config_data(st.session_state, cfg, overwrite=True)
-                    st.session_state["_banco_nome_pending"] = tpl.get("banco_nome", "")
-                    _sync_tmp_keys_after_template()
-                    log_acao(
-                        st.session_state.get("usuario_email", "desconhecido"),
-                        "TEMPLATE_BANCO_APLICADO",
-                        f"cliente_id={cliente_id};banco={tpl.get('banco_nome', '')}",
-                    )
-                    st.success(f"Template '{tpl.get('banco_nome')}' aplicado.")
-                    st.rerun()
-                else:
-                    st.error("Template vazio ou inválido.")
-        with col_del:
-            if st.button("Excluir", key="conc_template_delete", use_container_width=True):
-                delete_conciliacao_template(template_id)
-                log_acao(
-                    st.session_state.get("usuario_email", "desconhecido"),
-                    "TEMPLATE_BANCO_EXCLUIDO",
-                    f"cliente_id={cliente_id};template_id={template_id}",
-                )
-                st.success("Template excluído.")
-                st.rerun()
-
-    fin_tpl = get_fin_template(cliente_id)
-    if fin_tpl:
-        st.caption("✅ Template financeiro salvo e carregado automaticamente para esta empresa.")
-    else:
-        st.caption("ℹ️ O template de mapeamento financeiro será salvo automaticamente ao concluir a primeira conciliação.")
 
 
 # ── Wizard de conciliação ──────────────────────────────────────────────────────
