@@ -197,25 +197,15 @@ def step_review(cards: List[ReviewCard]) -> List[ReviewCard]:
             if card.candidatos:
                 decisao = st.radio(
                     "Decisão:",
-                    ["Conciliar seleção", "Ignorar linha", "Deixar sem decisão"],
-                    key=f"review_dec_{card_key}",
-                    index=2,
-                    horizontal=True,
-                )
-                card.decisao = (
-                    "conciliar" if decisao == "Conciliar seleção"
-                    else "ignorar" if decisao == "Ignorar linha"
-                    else ""
-                )
-            else:
-                decisao = st.radio(
-                    "Decisão:",
-                    ["Ignorar linha", "Deixar sem decisão"],
+                    ["Conciliar seleção", "Ignorar revisão (liberar para confronto manual)"],
                     key=f"review_dec_{card_key}",
                     index=1,
                     horizontal=True,
                 )
-                card.decisao = "ignorar" if decisao == "Ignorar linha" else ""
+                card.decisao = "conciliar" if decisao == "Conciliar seleção" else "ignorar"
+            else:
+                card.decisao = "ignorar"
+                st.info("Sem candidatos disponíveis — será liberado para o confronto manual.")
 
     # ── 4. Resumo global ──────────────────────────────────────────────────────
     st.divider()

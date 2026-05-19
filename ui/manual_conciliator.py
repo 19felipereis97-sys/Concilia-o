@@ -381,6 +381,29 @@ def _ignore_bank(df_bnk: pd.DataFrame, ids_bnk: str | list[str]) -> pd.DataFrame
     return df_bnk
 
 
+def _apply_n_to_1_match(
+    df_bnk: pd.DataFrame,
+    df_fin: pd.DataFrame,
+    ids_bnk: list[str],
+    id_fin: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    bnk_pos = dict(zip(df_bnk["_id"].astype(str), df_bnk.index))
+    fin_pos = dict(zip(df_fin["_id"].astype(str), df_fin.index))
+    fi = fin_pos.get(id_fin)
+    if fi is None:
+        return df_bnk, df_fin
+    df_fin.at[fi, "_status"] = STATUS_CONCILIADO_MANUAL
+    df_fin.at[fi, "_metodo"] = "manual"
+    df_fin.at[fi, "_id_bnk"] = ";".join(ids_bnk)
+    for id_b in ids_bnk:
+        bi = bnk_pos.get(id_b)
+        if bi is not None:
+            df_bnk.at[bi, "_status"] = STATUS_CONCILIADO_MANUAL
+            df_bnk.at[bi, "_metodo"] = "manual"
+            df_bnk.at[bi, "_ids_fin"] = id_fin
+    return df_bnk, df_fin
+
+
 def _ignore_financeiro(df_fin: pd.DataFrame, ids_fin: list[str]) -> pd.DataFrame:
     fin_pos = dict(zip(df_fin["_id"].astype(str), df_fin.index))
     for id_f in ids_fin:
@@ -457,7 +480,14 @@ def step_manual_conciliator(
 
     if bank_row is not None:
         bank_val, fin_sum, diff, is_exact = _render_selection_bar(bank_row, fin_selected, params)
-        can_partial = bool(selected_fin_ids) and not is_exact and diff > 0 and fin_sum > 0
+        # Parcial válido quando financeiro cobre menos que o banco (mesmo sinal, não exato)
+        can_partial = (
+            bool(selected_fin_ids)
+            and not is_exact
+            and fin_sum != 0
+            and abs(fin_sum) < abs(bank_val)
+            and (bank_val * fin_sum > 0)  # mesmo sinal (ambos crédito ou ambos débito)
+        )
 
         btn_exact, btn_partial, btn_ignore_bnk, btn_ignore_fin, btn_clear = st.columns([1.2, 1.3, 1.1, 1.2, 1])
         with btn_exact:
@@ -491,7 +521,39 @@ def step_manual_conciliator(
                 _clear_selection(sel_bnk_id)
                 st.rerun()
     elif len(selected_bnk_ids) > 1:
-        _, bulk_col, clear_col = st.columns([3, 1.4, 1])
+        # N banco → 1 financeiro: exibe resumo e botão de conciliação N:1
+        if selected_fin_ids:
+            fin_n1 = _selected_rows(fin_sem, selected_fin_ids)
+            bnk_n1 = _selected_rows(bnk_sem, selected_bnk_ids)
+            bnk_sum = sum((_to_decimal(v) for v in bnk_n1["_valor"].tolist()), Decimal("0"))
+            fin_val = _to_decimal(fin_n1.iloc[0]["_valor"]) if len(fin_n1) == 1 else Decimal("0")
+            diff_n1 = bnk_sum - fin_val
+            diff_klass = "manual-diff-ok" if abs(diff_n1) <= Decimal("0.01") else "manual-diff-warn" if abs(diff_n1) <= _tolerance(params) else "manual-diff-bad"
+            st.markdown(
+                f"""<div class="manual-selection"><div class="manual-selection-grid">
+                <div><div class="label">Soma bancários ({len(selected_bnk_ids)})</div><div class="amount">{fmt_valor(bnk_sum)}</div></div>
+                <div><div class="label">Financeiro selecionado</div><div class="amount">{fmt_valor(fin_val) if len(fin_n1)==1 else "—"}</div></div>
+                <div><div class="label">Diferença</div><div class="amount {diff_klass}">{fmt_valor(diff_n1) if len(fin_n1)==1 else "—"}</div></div>
+                </div></div>""",
+                unsafe_allow_html=True,
+            )
+
+        can_n1 = len(selected_fin_ids) == 1
+        n1_col, bulk_col, clear_col = st.columns([1.4, 1.5, 1])
+        with n1_col:
+            if st.button(
+                f"Conciliar {len(selected_bnk_ids)}:1",
+                key="mc_btn_n1",
+                disabled=not can_n1,
+                use_container_width=True,
+                type="primary",
+                help="Selecione exatamente 1 lançamento financeiro para vincular aos bancos selecionados.",
+            ):
+                df_bnk, df_fin = _apply_n_to_1_match(df_bnk, df_fin, selected_bnk_ids, selected_fin_ids[0])
+                st.session_state["df_bnk"] = df_bnk
+                st.session_state["df_fin"] = df_fin
+                _clear_selection(None)
+                st.rerun()
         with bulk_col:
             if st.button(f"Ignorar {len(selected_bnk_ids)} bancos", key="mc_btn_ignore_bnk_bulk", use_container_width=True):
                 df_bnk = _ignore_bank(df_bnk, selected_bnk_ids)

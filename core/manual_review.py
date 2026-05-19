@@ -12,7 +12,7 @@ import pandas as pd
 
 from .normalize import (
     STATUS_REVISAR, STATUS_REVISAR_COLISAO,
-    STATUS_CONCILIADO, STATUS_CONCILIADO_MANUAL, STATUS_IGNORADO_USUARIO,
+    STATUS_CONCILIADO, STATUS_CONCILIADO_MANUAL,
     STATUS_IGNORADO_SEM_PAR, STATUS_SEM_PAREAMENTO,
 )
 from .params import ConciliacaoParams
@@ -248,14 +248,31 @@ def apply_review_decisions(
 
     for card in cards:
         if not card.decisao:
+            # Sem decisão: libera igualmente para o confronto manual
+            if card.id_fin:
+                fi = fin_pos.get(card.id_fin)
+                if fi is not None:
+                    df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
+                    df_fin.at[fi, "_metodo"] = ""
+                    df_fin.at[fi, "_id_bnk"] = ""
+                    _release_blocked_banco(df_bnk, card.id_fin, set())
+            else:
+                bi = bnk_pos.get(card.id_bnk)
+                if bi is not None:
+                    df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
+                    df_bnk.at[bi, "_metodo"] = ""
+                    df_bnk.at[bi, "_ids_fin"] = ""
+                    _release_blocked_financeiro(df_fin, card.id_bnk, set())
             continue
+
         if card.id_fin:
             fi = fin_pos.get(card.id_fin)
             if fi is None:
                 continue
-            if card.decisao == "ignorar":
-                df_fin.at[fi, "_status"] = STATUS_IGNORADO_USUARIO
-                df_fin.at[fi, "_metodo"] = "manual:ignorado"
+            if card.decisao == "ignorar" or (card.decisao == "conciliar" and not card.selecao_pre):
+                # Libera para o confronto manual (não ignora permanentemente)
+                df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
+                df_fin.at[fi, "_metodo"] = ""
                 df_fin.at[fi, "_id_bnk"] = ""
                 _release_blocked_banco(df_bnk, card.id_fin, set())
             elif card.decisao == "conciliar" and card.selecao_pre:
@@ -276,9 +293,10 @@ def apply_review_decisions(
         if bi is None:
             continue
 
-        if card.decisao == "ignorar":
-            df_bnk.at[bi, "_status"] = STATUS_IGNORADO_USUARIO
-            df_bnk.at[bi, "_metodo"] = "manual:ignorado"
+        if card.decisao == "ignorar" or (card.decisao == "conciliar" and not card.selecao_pre):
+            # Libera para o confronto manual (não ignora permanentemente)
+            df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
+            df_bnk.at[bi, "_metodo"] = ""
             df_bnk.at[bi, "_ids_fin"] = ""
             _release_blocked_financeiro(df_fin, card.id_bnk, set())
         elif card.decisao == "conciliar" and card.selecao_pre:
