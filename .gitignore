@@ -13,10 +13,14 @@ streamlit-*.out.log
 data/jobs/
 *.tmp
 
-# Banco de dados — NÃO commitar
-# Os dados de produção ficam no Streamlit Cloud; commitar o .db
-# sobrescreve o banco de produção a cada deploy.
-data/conciliador.db
+# NOTA sobre o banco de dados (data/conciliador.db):
+# O banco É commitado intencionalmente — o Streamlit Cloud tem
+# filesystem efêmero (perde dados ao reiniciar) e usa o .db do git
+# como "fonte da verdade". Workflow obrigatório ANTES de cada push:
+#   1. No Streamlit Cloud → Admin → aba Backup → Exportar backup
+#   2. Localmente: Admin → aba Backup → Restaurar com o arquivo baixado
+#   3. Só então commitar + push
+# Isso evita perder regras de De x Para adicionadas em produção.
 
 # Ambientes virtuais
 .venv/
