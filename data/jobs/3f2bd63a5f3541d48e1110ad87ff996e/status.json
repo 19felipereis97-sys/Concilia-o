@@ -1,8 +1,0 @@
-{
-  "job_id": "3f2bd63a5f3541d48e1110ad87ff996e",
-  "status": "running",
-  "message": "Validando saldos normalizados.",
-  "updated_at": 1778009443.6855621,
-  "progress": 12,
-  "stage": "normalizacao"
-}
