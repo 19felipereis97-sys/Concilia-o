@@ -26,7 +26,10 @@ from plan.client_store import (
     log_acao, log_depara_change, change_password,
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
-from core.normalize import normalize_extrato, normalize_financeiro
+from core.normalize import (
+    normalize_extrato, normalize_financeiro,
+    STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
+)
 from core.engine import run_engine
 from core.manual_review import apply_review_decisions
 from core.report_builder import build_report
@@ -704,6 +707,63 @@ def _release_all_revisar(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> tuple:
     return df_bnk, df_fin
 
 
+def _restore_review_released(
+    df_bnk: pd.DataFrame,
+    df_fin: pd.DataFrame,
+    protected_bnk: set,
+    protected_fin: set,
+) -> tuple:
+    """
+    Garante que lançamentos liberados pelo usuário na revisão
+    (ignorados ou sem decisão) permaneçam disponíveis para a
+    conciliação manual, mesmo que run_engine os tenha re-bloqueado.
+    """
+    bnk_pos = {str(v): i for v, i in zip(df_bnk["_id"], df_bnk.index)}
+    fin_pos = {str(v): i for v, i in zip(df_fin["_id"], df_fin.index)}
+
+    for id_b in protected_bnk:
+        bi = bnk_pos.get(str(id_b))
+        if bi is None:
+            continue
+        if str(df_bnk.at[bi, "_status"]) == STATUS_SEM_PAREAMENTO:
+            continue  # já livre, ok
+        # Motor re-bloqueou ou re-conciliou — desfaz o vínculo
+        ids_fin_str = str(df_bnk.at[bi, "_ids_fin"] or "")
+        for id_f in [x.strip() for x in ids_fin_str.split(";") if x.strip()]:
+            fi = fin_pos.get(id_f)
+            if fi is not None:
+                fin_bnk_ref = {x.strip() for x in str(df_fin.at[fi, "_id_bnk"] or "").split(";") if x.strip()}
+                if str(id_b) in fin_bnk_ref:
+                    df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
+                    df_fin.at[fi, "_metodo"] = ""
+                    df_fin.at[fi, "_id_bnk"] = ""
+        df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
+        df_bnk.at[bi, "_metodo"] = ""
+        df_bnk.at[bi, "_ids_fin"] = ""
+
+    for id_f in protected_fin:
+        fi = fin_pos.get(str(id_f))
+        if fi is None:
+            continue
+        if str(df_fin.at[fi, "_status"]) == STATUS_IGNORADO_SEM_PAR:
+            continue  # já livre, ok
+        # Motor re-bloqueou — desfaz
+        ids_bnk_str = str(df_fin.at[fi, "_id_bnk"] or "")
+        for id_b in [x.strip() for x in ids_bnk_str.split(";") if x.strip()]:
+            bi = bnk_pos.get(id_b)
+            if bi is not None:
+                bnk_fin_ref = {x.strip() for x in str(df_bnk.at[bi, "_ids_fin"] or "").split(";") if x.strip()}
+                if str(id_f) in bnk_fin_ref:
+                    df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
+                    df_bnk.at[bi, "_metodo"] = ""
+                    df_bnk.at[bi, "_ids_fin"] = ""
+        df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
+        df_fin.at[fi, "_metodo"] = ""
+        df_fin.at[fi, "_id_bnk"] = ""
+
+    return df_bnk, df_fin
+
+
 def _render_download_section(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> None:
     cliente_fluxo = st.session_state.get("cliente_conciliacao")
     cliente_id    = st.session_state.get("cliente_conciliacao_id")
@@ -778,10 +838,23 @@ def _etapa_revisao_download():
             if st.button("Aplicar decisões e avançar para Conciliação Manual",
                          type="primary", key="btn_advance_manual", use_container_width=True):
                 with st.spinner("Aplicando decisões e re-executando motor..."):
+                    # IDs de lançamentos NÃO conciliados na revisão — devem
+                    # ficar livres para a conciliação manual mesmo após run_engine.
+                    protected_bnk = {
+                        c.id_bnk for c in cards
+                        if c.id_bnk and not (c.decisao == "conciliar" and c.selecao_pre)
+                    }
+                    protected_fin = {
+                        c.id_fin for c in cards
+                        if c.id_fin and not (c.decisao == "conciliar" and c.selecao_pre)
+                    }
                     df_bnk, df_fin = apply_review_decisions(df_bnk, df_fin, cards)
                     df_bnk, df_fin = _release_all_revisar(df_bnk, df_fin)
                     if params is not None:
                         df_bnk, df_fin = run_engine(df_bnk, df_fin, params, include_partial=False)
+                        df_bnk, df_fin = _restore_review_released(
+                            df_bnk, df_fin, protected_bnk, protected_fin
+                        )
                     st.session_state["df_bnk"]      = df_bnk
                     st.session_state["df_fin"]       = df_fin
                     st.session_state["review_phase"] = "D"
