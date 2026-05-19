@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Logs do Streamlit (locais)
+streamlit-*.log
+streamlit-*.err.log
+streamlit-*.out.log
+
+# Jobs e temporários
+data/jobs/
+*.tmp
+
+# Banco de dados — NÃO commitar
+# Os dados de produção ficam no Streamlit Cloud; commitar o .db
+# sobrescreve o banco de produção a cada deploy.
+data/conciliador.db
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
