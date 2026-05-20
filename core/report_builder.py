@@ -4,6 +4,7 @@ Geração do relatório Excel com 6 abas.
 from __future__ import annotations
 import datetime
 import io
+import re
 from decimal import Decimal
 from typing import Optional
 
@@ -270,6 +271,13 @@ def _pick_hist(hist_banco: str, hist_fin: str, hist_mode: str) -> str:
     return _concat_hist(hist_banco, hist_fin)  # "Banco + Financeiro" (padrão)
 
 
+def _clean_hist_alterdata(text: str) -> str:
+    """Limpa o histórico para exportação Alterdata: | → - e múltiplos espaços → 1."""
+    text = text.replace("|", "-")
+    text = re.sub(r" {3,}", " ", text)
+    return text
+
+
 def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco, hist_mode="Banco + Financeiro"):
     ws = wb.create_sheet("Importação Alterdata")
     headers = ["Histórico", "Nota Fiscal", "Data", "Nat. Cod", "Nat. Desc.", "Valor", "Débito", "Crédito"]
@@ -314,7 +322,7 @@ def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco, hist_mode="B
                 )
                 hist_fin = str(fin_row.get("_historico", "")).strip()
                 ws.append([
-                    _pick_hist(hist_banco, hist_fin, hist_mode),
+                    _clean_hist_alterdata(_pick_hist(hist_banco, hist_fin, hist_mode)),
                     None,
                     data_val,
                     None,
@@ -332,7 +340,7 @@ def _build_alterdata(wb, df_bnk, df_fin, depara_index, conta_banco, hist_mode="B
             )
             hist_fin = _resolve_historico_fin(ids_fin_str, fin_by_id)
             ws.append([
-                _pick_hist(hist_banco, hist_fin, hist_mode),
+                _clean_hist_alterdata(_pick_hist(hist_banco, hist_fin, hist_mode)),
                 None,
                 data_val,
                 None,
