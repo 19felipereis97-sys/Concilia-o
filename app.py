@@ -29,9 +29,10 @@ from plan.planilha_contabil import export_depara_csv, get_depara_dict
 from core.normalize import (
     normalize_extrato, normalize_financeiro,
     STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
+    STATUS_REVISAR, STATUS_REVISAR_COLISAO,
 )
 from core.engine import run_engine
-from core.manual_review import apply_review_decisions
+from core.manual_review import apply_review_decisions, build_review_queue
 from core.report_builder import build_report
 from core.background_jobs import (
     cancel_job,
@@ -725,9 +726,12 @@ def _restore_review_released(
         bi = bnk_pos.get(str(id_b))
         if bi is None:
             continue
-        if str(df_bnk.at[bi, "_status"]) == STATUS_SEM_PAREAMENTO:
+        status_b = str(df_bnk.at[bi, "_status"])
+        if status_b == STATUS_SEM_PAREAMENTO:
             continue  # já livre, ok
-        # Motor re-bloqueou ou re-conciliou — desfaz o vínculo
+        if status_b not in (STATUS_REVISAR, STATUS_REVISAR_COLISAO):
+            continue  # motor conciliou limpo — manter resultado
+        # Motor re-bloqueou em REVISAR — desfaz o vínculo
         ids_fin_str = str(df_bnk.at[bi, "_ids_fin"] or "")
         for id_f in [x.strip() for x in ids_fin_str.split(";") if x.strip()]:
             fi = fin_pos.get(id_f)
@@ -745,9 +749,12 @@ def _restore_review_released(
         fi = fin_pos.get(str(id_f))
         if fi is None:
             continue
-        if str(df_fin.at[fi, "_status"]) == STATUS_IGNORADO_SEM_PAR:
+        status_f = str(df_fin.at[fi, "_status"])
+        if status_f == STATUS_IGNORADO_SEM_PAR:
             continue  # já livre, ok
-        # Motor re-bloqueou — desfaz
+        if status_f not in (STATUS_REVISAR, STATUS_REVISAR_COLISAO):
+            continue  # motor conciliou limpo — manter resultado
+        # Motor re-bloqueou em REVISAR — desfaz
         ids_bnk_str = str(df_fin.at[fi, "_id_bnk"] or "")
         for id_b in [x.strip() for x in ids_bnk_str.split(";") if x.strip()]:
             bi = bnk_pos.get(id_b)
@@ -838,8 +845,6 @@ def _etapa_revisao_download():
             if st.button("Aplicar decisões e avançar para Conciliação Manual",
                          type="primary", key="btn_advance_manual", use_container_width=True):
                 with st.spinner("Aplicando decisões e re-executando motor..."):
-                    # IDs de lançamentos NÃO conciliados na revisão — devem
-                    # ficar livres para a conciliação manual mesmo após run_engine.
                     protected_bnk = {
                         c.id_bnk for c in cards
                         if c.id_bnk and not (c.decisao == "conciliar" and c.selecao_pre)
@@ -855,10 +860,18 @@ def _etapa_revisao_download():
                         df_bnk, df_fin = _restore_review_released(
                             df_bnk, df_fin, protected_bnk, protected_fin
                         )
-                    st.session_state["df_bnk"]      = df_bnk
-                    st.session_state["df_fin"]       = df_fin
-                    st.session_state["review_phase"] = "D"
+                    # Se o motor gerou novas ambiguidades, volta para revisão com a nova fila.
+                    # Só avança para conciliação manual quando não restar nenhum REVISAR.
+                    new_cards = build_review_queue(df_bnk, df_fin, params) if params is not None else []
+                    st.session_state["df_bnk"] = df_bnk
+                    st.session_state["df_fin"] = df_fin
                     st.session_state.pop("manual_sel_bnk", None)
+                    if new_cards:
+                        st.session_state["review_cards"] = new_cards
+                        # review_phase permanece "B" — nova rodada de revisão
+                    else:
+                        st.session_state["review_cards"] = []
+                        st.session_state["review_phase"] = "D"
                 st.rerun()
         with col_skip:
             if st.button("Pular para Download", key="btn_skip_download", use_container_width=True):
