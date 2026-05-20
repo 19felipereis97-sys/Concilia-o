@@ -13,6 +13,9 @@ streamlit-*.out.log
 data/jobs/
 *.tmp
 
+# Backups automáticos (gerados localmente a cada hora)
+data/backups/
+
 # NOTA sobre o banco de dados (data/conciliador.db):
 # O banco É commitado intencionalmente — o Streamlit Cloud tem
 # filesystem efêmero (perde dados ao reiniciar) e usa o .db do git

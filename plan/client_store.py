@@ -42,6 +42,50 @@ def _configured_db_path() -> Path:
 
 DB_PATH = _configured_db_path()
 
+_BACKUP_DIR      = DB_PATH.parent / "backups"
+_BACKUP_RETENTION = 3
+_BACKUP_INTERVAL  = datetime.timedelta(hours=1)
+
+
+def _get_backup_dir() -> Path:
+    _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    return _BACKUP_DIR
+
+
+def _cleanup_old_backups() -> None:
+    backups = sorted(
+        _get_backup_dir().glob("conciliador_backup_*.db"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    for old in backups[_BACKUP_RETENTION:]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+
+
+def maybe_create_auto_backup() -> bool:
+    """Cria backup automático se passou 1 hora desde o último. Retorna True se criou."""
+    try:
+        d = _get_backup_dir()
+        backups = sorted(
+            d.glob("conciliador_backup_*.db"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if backups:
+            last_dt = datetime.datetime.fromtimestamp(backups[0].stat().st_mtime)
+            if datetime.datetime.now() - last_dt < _BACKUP_INTERVAL:
+                return False
+        data = export_database_backup()
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        (d / f"conciliador_backup_{ts}.db").write_bytes(data)
+        _cleanup_old_backups()
+        return True
+    except Exception:
+        return False
+
 
 def _conn() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)

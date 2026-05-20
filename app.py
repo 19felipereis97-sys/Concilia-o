@@ -24,6 +24,7 @@ from plan.client_store import (
     get_cliente_by_id, get_clientes_do_grupo, replicate_depara,
     get_conta_banco, set_conta_banco,
     log_acao, log_depara_change, change_password,
+    maybe_create_auto_backup,
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
 from core.normalize import (
@@ -56,6 +57,7 @@ from ui.admin import show_admin_panel
 from core.wizard_persistence import apply_wizard_config
 
 init_db()
+maybe_create_auto_backup()
 
 # Pré-preenche session_state com a config salva (apenas uma vez por sessão)
 if "_wizard_config_loaded" not in st.session_state:
