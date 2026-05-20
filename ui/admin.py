@@ -99,6 +99,7 @@ def _show_backup_restore():
             try:
                 restore_database_backup(up.read())
                 log_acao(st.session_state.get("usuario_email", "desconhecido"), "BACKUP_RESTAURADO", "")
+                st.cache_data.clear()
                 st.success("Backup restaurado. O app será recarregado.")
                 st.rerun()
             except Exception as e:
