@@ -19,7 +19,7 @@ data/jobs/
 # como "fonte da verdade". Workflow obrigatório ANTES de cada push:
 #   1. No Streamlit Cloud → Admin → aba Backup → Exportar backup
 #   2. Localmente: Admin → aba Backup → Restaurar com o arquivo baixado
-#   3. Só então commitar + push
+#   3. Só então commitar data/conciliador.db + código → push
 # Isso evita perder regras de De x Para adicionadas em produção.
 
 # Ambientes virtuais
