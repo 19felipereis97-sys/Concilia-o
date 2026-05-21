@@ -78,13 +78,14 @@ def _show_backup_restore():
         st.markdown("**Exportar backup**")
         try:
             backup = export_database_backup()
-            st.download_button(
+            if st.download_button(
                 "Baixar backup SQLite",
                 backup,
                 file_name=f"conciliador_backup_{datetime.datetime.now():%Y%m%d_%H%M%S}.db",
                 mime="application/octet-stream",
                 key="db_backup_download",
-            )
+            ):
+                log_acao(st.session_state.get("usuario_email", "desconhecido"), "BACKUP_EXPORTADO", "exportação manual")
         except Exception as e:
             st.error(f"Não foi possível gerar backup: {e}")
 

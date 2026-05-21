@@ -80,8 +80,10 @@ def maybe_create_auto_backup() -> bool:
                 return False
         data = export_database_backup()
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        (d / f"conciliador_backup_{ts}.db").write_bytes(data)
+        arquivo = f"conciliador_backup_{ts}.db"
+        (d / arquivo).write_bytes(data)
         _cleanup_old_backups()
+        log_acao("sistema", "BACKUP_AUTO", f"arquivo={arquivo}")
         return True
     except Exception:
         return False
