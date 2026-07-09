@@ -479,12 +479,18 @@ def find_all_combos(
     tol: float,
     max_k: int,
     max_results: int = 20,
+    deadline: Optional[float] = None,
 ) -> List[Tuple[int, ...]]:
     """
     Retorna até max_results combinações de índices em `vals` cuja soma ≈ target ± tol.
     Inclui k=1 (correspondência exata) e k≥2 (combinações parciais).
     Não cacheado — usado apenas na fila de revisão manual, onde o conjunto de
     candidatos já é pequeno (mesma data, mesmo sinal).
+
+    deadline: valor de time.monotonic() após o qual a busca é interrompida,
+    devolvendo o que já foi encontrado até então (resultado parcial). Protege
+    a fila de revisão manual contra grupos patológicos sem parâmetro de
+    timeout próprio (diferente de find_combos/find_max_partial).
     """
     n = len(vals)
     if n < 1:
@@ -507,21 +513,26 @@ def find_all_combos(
 
     matches_internal: List[Tuple] = []
 
-    for k in range(1, min(max_k, n) + 1):
-        min_sum = prefix[k]
-        max_sum = prefix[n] - prefix[n - k]
-        if abs_target_c < min_sum - tol_c or abs_target_c > max_sum + tol_c:
-            continue
+    try:
+        for k in range(1, min(max_k, n) + 1):
+            min_sum = prefix[k]
+            max_sum = prefix[n] - prefix[n - k]
+            if abs_target_c < min_sum - tol_c or abs_target_c > max_sum + tol_c:
+                continue
 
-        remaining = max_results - len(matches_internal)
-        if _use_mitm(n, k):
-            new = _mitm_k_all(sv, n, k, abs_target_c, tol_c, remaining)
-        else:
-            new = _brute_k_all(sv, n, k, abs_target_c, tol_c, prefix, remaining)
+            remaining = max_results - len(matches_internal)
+            if _use_mitm(n, k):
+                new = _mitm_k_all(sv, n, k, abs_target_c, tol_c, remaining, deadline)
+            else:
+                new = _brute_k_all(sv, n, k, abs_target_c, tol_c, prefix, remaining, deadline)
 
-        matches_internal.extend(new)
-        if len(matches_internal) >= max_results:
-            break
+            matches_internal.extend(new)
+            if len(matches_internal) >= max_results:
+                break
+            if deadline is not None and time.monotonic() > deadline:
+                break
+    except _TimeoutExceeded:
+        pass
 
     return [_remap(c, order) for c in matches_internal]
 
@@ -534,6 +545,7 @@ def _brute_k_all(
     tol_c: int,
     prefix: _array_mod.array,
     max_results: int,
+    deadline: Optional[float] = None,
 ) -> List[Tuple]:
     """Força bruta coletando até max_results combinações válidas (sem early-exit em 2)."""
     suffix_max = _array_mod.array('q', [0] * (k + 1))
@@ -541,8 +553,10 @@ def _brute_k_all(
         suffix_max[rem] = prefix[n] - prefix[n - rem]
 
     matches: List[Tuple] = []
+    call_count = 0
 
     def _rec(start: int, rem: int, cur: list, partial: int) -> None:
+        nonlocal call_count
         if len(matches) >= max_results:
             return
         if rem == 0:
@@ -557,6 +571,10 @@ def _brute_k_all(
             return
         if partial + suffix_max[rem] < target_c - tol_c:
             return
+        if deadline is not None:
+            call_count += 1
+            if (call_count & 0xFF) == 0 and time.monotonic() > deadline:
+                raise _TimeoutExceeded()
         for i in range(start, n - rem + 1):
             if partial + sv[i] > target_c + tol_c:
                 break
@@ -577,6 +595,7 @@ def _mitm_k_all(
     target_c: int,
     tol_c: int,
     max_results: int,
+    deadline: Optional[float] = None,
 ) -> List[Tuple]:
     """Meet-in-the-middle coletando até max_results combinações válidas."""
     m = n // 2
@@ -622,4 +641,6 @@ def _mitm_k_all(
                                 matches.append(combo_l + combo_r)
                                 if len(matches) >= max_results:
                                     return matches
+        if deadline is not None and time.monotonic() > deadline:
+            raise _TimeoutExceeded()
     return matches

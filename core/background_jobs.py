@@ -194,13 +194,17 @@ def start_rerun_job(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
     params: ConciliacaoParams,
+    protected_bnk: set | None = None,
+    protected_fin: set | None = None,
 ) -> str:
     """Reexecuta run_engine em segundo plano (usado após decisões de revisão manual).
 
-    Antes, esse recálculo rodava direto no processo do Streamlit e travava
-    a sessão de todos os usuários simultâneos (Python puro segurando o GIL
-    durante a busca combinatória). Agora passa pelo mesmo isolamento em
-    subprocesso + fila usado na conciliação inicial.
+    Antes, esse recálculo — e a restauração de itens liberados na revisão
+    manual + reconstrução da fila — rodava direto no processo do Streamlit e
+    travava a sessão de todos os usuários simultâneos (Python puro segurando
+    o GIL durante a busca combinatória). Agora passa pelo mesmo isolamento em
+    subprocesso + fila usado na conciliação inicial; os IDs protegidos vão
+    junto no payload para que o worker faça a restauração também isolada.
     """
     job_id = uuid.uuid4().hex
     job_path = _job_dir(job_id)
@@ -212,6 +216,43 @@ def start_rerun_job(
                 "df_bnk": df_bnk,
                 "df_fin": df_fin,
                 "params": params,
+                "protected_bnk": protected_bnk or set(),
+                "protected_fin": protected_fin or set(),
+            },
+            f,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    _enqueue(job_id)
+    return job_id
+
+
+def start_report_job(
+    df_bnk: pd.DataFrame,
+    df_fin: pd.DataFrame,
+    depara_dict: dict,
+    conta_banco: str,
+    hist_mode: str,
+) -> str:
+    """Gera o relatório Excel em segundo plano.
+
+    build_report escreve célula a célula via openpyxl em até 7 abas — em
+    bases grandes isso é CPU-bound o bastante para travar as sessões de
+    todos os usuários se rodasse dentro do processo do Streamlit (mesma
+    classe de problema do run_engine). Passa pelo mesmo isolamento em
+    subprocesso + fila.
+    """
+    job_id = uuid.uuid4().hex
+    job_path = _job_dir(job_id)
+    job_path.mkdir(parents=True, exist_ok=True)
+    with _input_path(job_id).open("wb") as f:
+        pickle.dump(
+            {
+                "mode": "report",
+                "df_bnk": df_bnk,
+                "df_fin": df_fin,
+                "depara_dict": depara_dict,
+                "conta_banco": conta_banco,
+                "hist_mode": hist_mode,
             },
             f,
             protocol=pickle.HIGHEST_PROTOCOL,

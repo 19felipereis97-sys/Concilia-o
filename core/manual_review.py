@@ -3,6 +3,7 @@ Fila de revisão manual para linhas ambíguas ou sem pareamento.
 """
 from __future__ import annotations
 import datetime
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -163,7 +164,10 @@ def build_review_queue(
 
         # Todas as combinações válidas de candidatos que somam ao valor bancário
         vals_f = [float(c["valor"]) for c in candidatos]
-        combos_idx = [] if limited else find_all_combos(vals_f, float(rec_b["_valor"]), tol, params.max_group_size)
+        deadline = time.monotonic() + params.combo_timeout_sec if params.combo_timeout_sec > 0 else None
+        combos_idx = [] if limited else find_all_combos(
+            vals_f, float(rec_b["_valor"]), tol, params.max_group_size, deadline=deadline,
+        )
         combinacoes = [[candidatos[i]["id"] for i in combo] for combo in combos_idx]
 
         if len(combinacoes) == 1:
@@ -214,7 +218,10 @@ def build_review_queue(
             continue
 
         vals_b = [float(c["valor"]) for c in candidatos]
-        combos_idx = find_all_combos(vals_b, float(rec_f["_valor"]), tol, params.max_group_size)
+        deadline = time.monotonic() + params.combo_timeout_sec if params.combo_timeout_sec > 0 else None
+        combos_idx = find_all_combos(
+            vals_b, float(rec_f["_valor"]), tol, params.max_group_size, deadline=deadline,
+        )
         combinacoes = [[candidatos[i]["id"] for i in combo] for combo in combos_idx]
 
         if len(combinacoes) == 1:
@@ -398,3 +405,70 @@ def _release_blocked_banco(
     df_bnk.loc[mask, "_status"] = STATUS_SEM_PAREAMENTO
     df_bnk.loc[mask, "_metodo"] = ""
     df_bnk.loc[mask, "_ids_fin"] = ""
+
+
+def restore_review_released(
+    df_bnk: pd.DataFrame,
+    df_fin: pd.DataFrame,
+    protected_bnk: set,
+    protected_fin: set,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Garante que lançamentos liberados pelo usuário na revisão (ignorados ou
+    sem decisão) permaneçam disponíveis para a conciliação manual, mesmo que
+    run_engine os tenha re-bloqueado ao reexecutar.
+
+    Roda dentro do worker de conciliação (job "rerun"), logo após run_engine,
+    para que a reexecução completa — motor + restauração + fila de revisão —
+    fique isolada no subprocesso, sem nenhuma etapa síncrona no Streamlit.
+    """
+    bnk_pos = {str(v): i for v, i in zip(df_bnk["_id"], df_bnk.index)}
+    fin_pos = {str(v): i for v, i in zip(df_fin["_id"], df_fin.index)}
+
+    for id_b in protected_bnk:
+        bi = bnk_pos.get(str(id_b))
+        if bi is None:
+            continue
+        status_b = str(df_bnk.at[bi, "_status"])
+        if status_b == STATUS_SEM_PAREAMENTO:
+            continue  # já livre, ok
+        if status_b not in (STATUS_REVISAR, STATUS_REVISAR_COLISAO):
+            continue  # motor conciliou limpo — manter resultado
+        # Motor re-bloqueou em REVISAR — desfaz o vínculo
+        ids_fin_str = str(df_bnk.at[bi, "_ids_fin"] or "")
+        for id_f in [x.strip() for x in ids_fin_str.split(";") if x.strip()]:
+            fi = fin_pos.get(id_f)
+            if fi is not None:
+                fin_bnk_ref = {x.strip() for x in str(df_fin.at[fi, "_id_bnk"] or "").split(";") if x.strip()}
+                if str(id_b) in fin_bnk_ref:
+                    df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
+                    df_fin.at[fi, "_metodo"] = ""
+                    df_fin.at[fi, "_id_bnk"] = ""
+        df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
+        df_bnk.at[bi, "_metodo"] = ""
+        df_bnk.at[bi, "_ids_fin"] = ""
+
+    for id_f in protected_fin:
+        fi = fin_pos.get(str(id_f))
+        if fi is None:
+            continue
+        status_f = str(df_fin.at[fi, "_status"])
+        if status_f == STATUS_IGNORADO_SEM_PAR:
+            continue  # já livre, ok
+        if status_f not in (STATUS_REVISAR, STATUS_REVISAR_COLISAO):
+            continue  # motor conciliou limpo — manter resultado
+        # Motor re-bloqueou em REVISAR — desfaz
+        ids_bnk_str = str(df_fin.at[fi, "_id_bnk"] or "")
+        for id_b in [x.strip() for x in ids_bnk_str.split(";") if x.strip()]:
+            bi = bnk_pos.get(id_b)
+            if bi is not None:
+                bnk_fin_ref = {x.strip() for x in str(df_bnk.at[bi, "_ids_fin"] or "").split(";") if x.strip()}
+                if str(id_f) in bnk_fin_ref:
+                    df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
+                    df_bnk.at[bi, "_metodo"] = ""
+                    df_bnk.at[bi, "_ids_fin"] = ""
+        df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
+        df_fin.at[fi, "_metodo"] = ""
+        df_fin.at[fi, "_id_bnk"] = ""
+
+    return df_bnk, df_fin

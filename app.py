@@ -27,18 +27,14 @@ from plan.client_store import (
     maybe_create_auto_backup,
 )
 from plan.planilha_contabil import export_depara_csv, get_depara_dict
-from core.normalize import (
-    normalize_extrato, normalize_financeiro,
-    STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
-    STATUS_REVISAR, STATUS_REVISAR_COLISAO,
-)
-from core.manual_review import apply_review_decisions, build_review_queue
-from core.report_builder import build_report
+from core.normalize import normalize_extrato, normalize_financeiro
+from core.manual_review import apply_review_decisions
 from core.background_jobs import (
     cancel_job,
     load_result,
     read_status,
     start_conciliation_job,
+    start_report_job,
     start_rerun_job,
 )
 from ui.wizard_upload import (
@@ -708,14 +704,12 @@ def _iniciar_rerun_review_job(df_bnk: pd.DataFrame, df_fin: pd.DataFrame, cards:
         st.rerun()
         return
 
-    job_id = start_rerun_job(df_bnk, df_fin, params)
+    job_id = start_rerun_job(df_bnk, df_fin, params, protected_bnk, protected_fin)
     st.session_state["review_rerun_job_id"] = job_id
-    st.session_state["review_rerun_protected_bnk"] = protected_bnk
-    st.session_state["review_rerun_protected_fin"] = protected_fin
     st.rerun()
 
 
-def _render_rerun_review_job(params) -> bool:
+def _render_rerun_review_job() -> bool:
     """Mostra o progresso do rerun em segundo plano. Retorna True se há um job
     em andamento ou recém-concluído (chamador deve parar de renderizar a fila antiga)."""
     job_id = st.session_state.get("review_rerun_job_id")
@@ -738,15 +732,10 @@ def _render_rerun_review_job(params) -> bool:
     if state == "done":
         try:
             result = load_result(job_id)
-            df_bnk = result["df_bnk"]
-            df_fin = result["df_fin"]
-            protected_bnk = st.session_state.pop("review_rerun_protected_bnk", set())
-            protected_fin = st.session_state.pop("review_rerun_protected_fin", set())
-            df_bnk, df_fin = _restore_review_released(df_bnk, df_fin, protected_bnk, protected_fin)
-            new_cards = build_review_queue(df_bnk, df_fin, params)
+            new_cards = result["review_cards"]
 
-            st.session_state["df_bnk"] = df_bnk
-            st.session_state["df_fin"] = df_fin
+            st.session_state["df_bnk"] = result["df_bnk"]
+            st.session_state["df_fin"] = result["df_fin"]
             if new_cards:
                 st.session_state["review_cards"] = new_cards
             else:
@@ -762,16 +751,12 @@ def _render_rerun_review_job(params) -> bool:
         st.warning(message or "Reexecução cancelada.")
         if st.button("Voltar para a revisão", key="rerun_job_clear_cancelled"):
             st.session_state.pop("review_rerun_job_id", None)
-            st.session_state.pop("review_rerun_protected_bnk", None)
-            st.session_state.pop("review_rerun_protected_fin", None)
             st.rerun()
         return True
 
     st.error(message or "A reexecução em segundo plano falhou.")
     if st.button("Voltar para a revisão", key="rerun_job_clear_error"):
         st.session_state.pop("review_rerun_job_id", None)
-        st.session_state.pop("review_rerun_protected_bnk", None)
-        st.session_state.pop("review_rerun_protected_fin", None)
         st.rerun()
     return True
 
@@ -804,67 +789,82 @@ def _release_all_revisar(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> tuple:
     return df_bnk, df_fin
 
 
-def _restore_review_released(
+def _iniciar_report_job(
     df_bnk: pd.DataFrame,
     df_fin: pd.DataFrame,
-    protected_bnk: set,
-    protected_fin: set,
-) -> tuple:
+    depara_dict: dict,
+    conta_banco: str,
+    hist_mode: str,
+    fname: str,
+) -> None:
+    """Inicia a geração do relatório Excel em segundo plano.
+
+    build_report escreve célula a célula via openpyxl em até 7 abas — em
+    bases grandes isso segura o GIL por tempo suficiente para travar as
+    sessões de todos os usuários se rodasse dentro do processo do Streamlit,
+    a mesma classe de problema do run_engine síncrono corrigida antes.
     """
-    Garante que lançamentos liberados pelo usuário na revisão
-    (ignorados ou sem decisão) permaneçam disponíveis para a
-    conciliação manual, mesmo que run_engine os tenha re-bloqueado.
-    """
-    bnk_pos = {str(v): i for v, i in zip(df_bnk["_id"], df_bnk.index)}
-    fin_pos = {str(v): i for v, i in zip(df_fin["_id"], df_fin.index)}
+    job_id = start_report_job(df_bnk, df_fin, depara_dict, conta_banco, hist_mode)
+    st.session_state["report_job_id"] = job_id
+    st.session_state["report_filename"] = fname
+    st.session_state.pop("report_xlsx_bytes", None)
+    st.rerun()
 
-    for id_b in protected_bnk:
-        bi = bnk_pos.get(str(id_b))
-        if bi is None:
-            continue
-        status_b = str(df_bnk.at[bi, "_status"])
-        if status_b == STATUS_SEM_PAREAMENTO:
-            continue  # já livre, ok
-        if status_b not in (STATUS_REVISAR, STATUS_REVISAR_COLISAO):
-            continue  # motor conciliou limpo — manter resultado
-        # Motor re-bloqueou em REVISAR — desfaz o vínculo
-        ids_fin_str = str(df_bnk.at[bi, "_ids_fin"] or "")
-        for id_f in [x.strip() for x in ids_fin_str.split(";") if x.strip()]:
-            fi = fin_pos.get(id_f)
-            if fi is not None:
-                fin_bnk_ref = {x.strip() for x in str(df_fin.at[fi, "_id_bnk"] or "").split(";") if x.strip()}
-                if str(id_b) in fin_bnk_ref:
-                    df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
-                    df_fin.at[fi, "_metodo"] = ""
-                    df_fin.at[fi, "_id_bnk"] = ""
-        df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
-        df_bnk.at[bi, "_metodo"] = ""
-        df_bnk.at[bi, "_ids_fin"] = ""
 
-    for id_f in protected_fin:
-        fi = fin_pos.get(str(id_f))
-        if fi is None:
-            continue
-        status_f = str(df_fin.at[fi, "_status"])
-        if status_f == STATUS_IGNORADO_SEM_PAR:
-            continue  # já livre, ok
-        if status_f not in (STATUS_REVISAR, STATUS_REVISAR_COLISAO):
-            continue  # motor conciliou limpo — manter resultado
-        # Motor re-bloqueou em REVISAR — desfaz
-        ids_bnk_str = str(df_fin.at[fi, "_id_bnk"] or "")
-        for id_b in [x.strip() for x in ids_bnk_str.split(";") if x.strip()]:
-            bi = bnk_pos.get(id_b)
-            if bi is not None:
-                bnk_fin_ref = {x.strip() for x in str(df_bnk.at[bi, "_ids_fin"] or "").split(";") if x.strip()}
-                if str(id_f) in bnk_fin_ref:
-                    df_bnk.at[bi, "_status"] = STATUS_SEM_PAREAMENTO
-                    df_bnk.at[bi, "_metodo"] = ""
-                    df_bnk.at[bi, "_ids_fin"] = ""
-        df_fin.at[fi, "_status"] = STATUS_IGNORADO_SEM_PAR
-        df_fin.at[fi, "_metodo"] = ""
-        df_fin.at[fi, "_id_bnk"] = ""
+def _render_report_job() -> bool:
+    """Mostra o progresso da geração do relatório em segundo plano.
+    Retorna True se há um job em andamento ou recém-concluído."""
+    job_id = st.session_state.get("report_job_id")
+    if not job_id:
+        return False
 
-    return df_bnk, df_fin
+    status = read_status(job_id)
+    state = status.get("status", "")
+    message = status.get("message", "")
+
+    if state in {"queued", "running"}:
+        st.info(message or "Gerando relatório em segundo plano.")
+        progress_value = int(status.get("progress", 0) or 0)
+        st.progress(min(max(progress_value, 0), 100), text=f"{progress_value}% - {message}")
+        time.sleep(1)
+        st.rerun()
+        return True
+
+    if state == "done":
+        try:
+            result = load_result(job_id)
+            st.session_state["report_xlsx_bytes"] = result["xlsx_bytes"]
+            timing = result.get("timing")
+            if timing:
+                timings = [
+                    item for item in st.session_state.setdefault("performance_timings", [])
+                    if item.get("Etapa") != timing.get("Etapa")
+                ]
+                timings.append(timing)
+                st.session_state["performance_timings"] = timings
+            log_acao(
+                st.session_state.get("usuario_email", "desconhecido"),
+                "RELATORIO_GERADO",
+                f"cliente={st.session_state.get('cliente_conciliacao', 'desconhecido')}",
+            )
+            st.session_state.pop("report_job_id", None)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao carregar o relatório gerado: {e}")
+        return True
+
+    if state == "cancelled":
+        st.warning(message or "Geração cancelada.")
+        if st.button("Tentar novamente", key="report_job_clear_cancelled"):
+            st.session_state.pop("report_job_id", None)
+            st.rerun()
+        return True
+
+    st.error(message or "Falha ao gerar o relatório em segundo plano.")
+    if st.button("Tentar novamente", key="report_job_clear_error"):
+        st.session_state.pop("report_job_id", None)
+        st.rerun()
+    return True
 
 
 def _render_download_section(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> None:
@@ -890,6 +890,10 @@ def _render_download_section(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> None
         ["Banco + Financeiro", "Somente bancário", "Somente financeiro"],
         index=0, horizontal=True, key="alterdata_hist_mode",
     )
+
+    if _render_report_job():
+        return
+
     if st.button("Gerar Relatório Excel", type="primary", key="btn_gerar"):
         if not cliente_id:
             st.error("Selecione um cliente na etapa 1 antes de gerar o relatório com De x Para.")
@@ -897,19 +901,19 @@ def _render_download_section(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> None
         if not conta_banco.strip():
             st.error("Informe a conta contábil do banco na etapa 1.")
             return
-        with st.spinner("Gerando relatório..."):
-            t0 = time.perf_counter()
-            xlsx_bytes = build_report(df_bnk, df_fin, depara_dict, conta_banco=conta_banco, hist_mode=hist_mode)
-            _perf_add("Geração do Excel", t0, f"{len(df_bnk)} banco / {len(df_fin)} financeiro")
-            log_acao(st.session_state.get("usuario_email", "desconhecido"), "RELATORIO_GERADO", f"cliente={cliente_fluxo}")
-            _cli_data   = get_cliente_by_id(cliente_id)
-            _codigo     = (_cli_data.get("codigo_interno") or "").strip() if _cli_data else ""
-            _nome_trunc = ((_cli_data.get("nome") or "").strip()[:20] if _cli_data else "")
-            _fname      = f"Conciliacao_{_codigo} - {_nome_trunc}.xlsx" if _codigo else "relatorio_conciliacao.xlsx"
-            st.download_button(
-                label="Baixar Relatório (.xlsx)", data=xlsx_bytes,
-                file_name=_fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            )
+        _cli_data   = get_cliente_by_id(cliente_id)
+        _codigo     = (_cli_data.get("codigo_interno") or "").strip() if _cli_data else ""
+        _nome_trunc = ((_cli_data.get("nome") or "").strip()[:20] if _cli_data else "")
+        _fname      = f"Conciliacao_{_codigo} - {_nome_trunc}.xlsx" if _codigo else "relatorio_conciliacao.xlsx"
+        _iniciar_report_job(df_bnk, df_fin, depara_dict, conta_banco, hist_mode, _fname)
+
+    if st.session_state.get("report_xlsx_bytes"):
+        st.download_button(
+            label="Baixar Relatório (.xlsx)",
+            data=st.session_state["report_xlsx_bytes"],
+            file_name=st.session_state.get("report_filename", "relatorio_conciliacao.xlsx"),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
     _render_agent_report()
     _render_performance_timings()
 
@@ -929,7 +933,7 @@ def _etapa_revisao_download():
 
     # ── Fase B — Revisão de ambiguidades ──────────────────────────────────────
     if phase == "B":
-        if _render_rerun_review_job(params):
+        if _render_rerun_review_job():
             return  # reexecução em segundo plano em andamento ou recém-concluída
 
         if cards:

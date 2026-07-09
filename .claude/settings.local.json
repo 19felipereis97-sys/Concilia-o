@@ -17,7 +17,13 @@
       "Bash(./.venv/bin/python -m py_compile app.py core/background_jobs.py core/conciliation_worker.py)",
       "Bash(./.venv/bin/python -m pytest tests/ -q)",
       "Bash(./.venv/bin/python -)",
-      "Bash(ls data/jobs/ 2>/dev/null; rm -rf data/jobs/*; ls data/jobs/ 2>/dev/null; echo \"limpo\")"
+      "Bash(ls data/jobs/ 2>/dev/null; rm -rf data/jobs/*; ls data/jobs/ 2>/dev/null; echo \"limpo\")",
+      "Bash(./.venv/bin/python -m py_compile app.py core/background_jobs.py core/conciliation_worker.py core/manual_review.py core/combo_search.py)",
+      "Bash(./.venv/bin/pip show *)",
+      "Bash(./.venv/bin/python -m pyflakes app.py core/background_jobs.py core/conciliation_worker.py core/manual_review.py core/combo_search.py)",
+      "Bash(rm -rf data/jobs/*)",
+      "Bash(git check-ignore *)",
+      "Bash(echo \"exit: $?\")"
     ],
     "additionalDirectories": [
       "/Users/matheuspetrakis/Documents/GitHub/Concilia-o/data/jobs"

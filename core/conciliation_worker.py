@@ -7,7 +7,8 @@ import time
 from .background_jobs import _input_path, _result_path, write_status
 from .engine import run_engine
 from .execution_agents import supervisor_agent
-from .manual_review import build_review_queue
+from .manual_review import build_review_queue, restore_review_released
+from .report_builder import build_report
 from .scope import apply_financeiro_scope
 
 
@@ -44,10 +45,15 @@ def _run_rerun(job_id: str, payload: dict) -> None:
 
     Não repete normalização, cálculo de saldo nem o supervisor_agent — essas
     etapas já rodaram no job "full" original e não mudam neste recálculo.
+    A restauração de itens liberados na revisão (antes feita em app.py, no
+    processo do Streamlit) também roda aqui, para que a reexecução completa
+    fique isolada no subprocesso.
     """
     df_bnk = payload["df_bnk"]
     df_fin = payload["df_fin"]
     params = payload["params"]
+    protected_bnk = payload.get("protected_bnk") or set()
+    protected_fin = payload.get("protected_fin") or set()
 
     write_status(job_id, "running", "Reexecutando motor de conciliacao.", progress=10, stage="motor")
     df_bnk, df_fin = run_engine(
@@ -55,10 +61,13 @@ def _run_rerun(job_id: str, payload: dict) -> None:
         df_fin,
         params,
         progress=lambda message, pct: write_status(
-            job_id, "running", message, progress=max(10, min(pct, 85)), stage="motor",
+            job_id, "running", message, progress=max(10, min(pct, 80)), stage="motor",
         ),
         include_partial=False,
     )
+
+    write_status(job_id, "running", "Restaurando itens liberados na revisao.", progress=85, stage="revisao")
+    df_bnk, df_fin = restore_review_released(df_bnk, df_fin, protected_bnk, protected_fin)
 
     write_status(job_id, "running", "Montando fila de revisao.", progress=90, stage="revisao")
     cards = build_review_queue(df_bnk, df_fin, params)
@@ -69,13 +78,46 @@ def _run_rerun(job_id: str, payload: dict) -> None:
     write_status(job_id, "done", "Reexecucao concluida.", progress=100, stage="revisao")
 
 
+def _run_report(job_id: str, payload: dict) -> None:
+    """Modo leve: gera o relatório Excel (build_report) fora do processo do Streamlit.
+
+    build_report escreve célula a célula via openpyxl em até 7 abas — em
+    bases grandes isso é CPU-bound o bastante para travar as sessões de
+    todos os usuários se rodasse in-process, a mesma classe de problema do
+    run_engine síncrono que existia antes.
+    """
+    df_bnk = payload["df_bnk"]
+    df_fin = payload["df_fin"]
+    depara_dict = payload.get("depara_dict") or {}
+    conta_banco = payload.get("conta_banco", "")
+    hist_mode = payload.get("hist_mode", "Banco + Financeiro")
+
+    write_status(job_id, "running", "Gerando relatorio Excel.", progress=20, stage="relatorio")
+    t0 = time.perf_counter()
+    xlsx_bytes = build_report(df_bnk, df_fin, depara_dict, conta_banco=conta_banco, hist_mode=hist_mode)
+    timing = {
+        "Etapa": "Geração do Excel",
+        "Tempo (s)": round(time.perf_counter() - t0, 3),
+        "Detalhes": f"{len(df_bnk)} banco / {len(df_fin)} financeiro",
+    }
+
+    with _result_path(job_id).open("wb") as f:
+        pickle.dump({"xlsx_bytes": xlsx_bytes, "timing": timing}, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    write_status(job_id, "done", "Relatorio gerado.", progress=100, stage="relatorio")
+
+
 def run(job_id: str) -> None:
     write_status(job_id, "running", "Carregando dados do job.", progress=5, stage="normalizacao")
     with _input_path(job_id).open("rb") as f:
         payload = pickle.load(f)
 
-    if payload.get("mode") == "rerun":
+    mode = payload.get("mode", "full")
+    if mode == "rerun":
         _run_rerun(job_id, payload)
+        return
+    if mode == "report":
+        _run_report(job_id, payload)
         return
 
     df_bnk = payload["df_bnk"]
