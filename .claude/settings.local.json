@@ -23,7 +23,8 @@
       "Bash(./.venv/bin/python -m pyflakes app.py core/background_jobs.py core/conciliation_worker.py core/manual_review.py core/combo_search.py)",
       "Bash(rm -rf data/jobs/*)",
       "Bash(git check-ignore *)",
-      "Bash(echo \"exit: $?\")"
+      "Bash(echo \"exit: $?\")",
+      "Bash(git commit -m ' *)"
     ],
     "additionalDirectories": [
       "/Users/matheuspetrakis/Documents/GitHub/Concilia-o/data/jobs"
