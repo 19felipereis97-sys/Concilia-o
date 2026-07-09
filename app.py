@@ -983,6 +983,8 @@ def _etapa_revisao_download():
             "fin_modalidade_str", "params", "balance_warning",
             "_norm_bnk_fp", "_norm_fin_fp", "performance_timings",
             "agent_report", "review_phase", "manual_sel_bnk",
+            "manual_sel_bnk_ids", "manual_selection_nonce",
+            "manual_finished", "_mc_fin_rows_cache",
             "cliente_conciliacao", "cliente_conciliacao_id",
             "cliente_conciliacao_select", "conta_banco_conciliacao",
             "conta_banco_conciliacao_input", "cliente_conta_banco_ref",

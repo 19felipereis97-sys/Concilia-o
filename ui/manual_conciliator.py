@@ -36,8 +36,9 @@ def _manual_css() -> None:
         .manual-kpi .value{color:var(--text-color);font-size:1.08rem;font-weight:750;white-space:nowrap}
         .manual-selection{margin:0 0 14px}
         .manual-selection-grid{display:grid;grid-template-columns:1.2fr 1.2fr 1fr;gap:10px;align-items:stretch}
-        .manual-selection .amount{font-size:1.18rem;font-weight:800;color:var(--text-color)}
-        .manual-selection .hint{font-size:.78rem;color:rgba(120,120,120,.95);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .manual-selection .amount{font-size:1.18rem;font-weight:800;color:var(--text-color);line-height:1.5}
+        .manual-selection .hint{font-size:.78rem;line-height:1.4;min-height:1.4em;color:rgba(120,120,120,.95);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .manual-diff-idle{color:rgba(120,120,120,.95)!important}
         .manual-diff-ok{color:#168A3A!important}.manual-diff-warn{color:#B26A00!important}.manual-diff-bad{color:#C62828!important}
         @media (max-width:900px){.manual-workbar,.manual-selection-grid{grid-template-columns:1fr}}
         </style>
@@ -126,7 +127,9 @@ def _selection_summary(bank_row, fin_rows: pd.DataFrame, params: ConciliacaoPara
     fin_sum = sum((_to_decimal(v) for v in fin_rows["_valor"].tolist()), Decimal("0"))
     diff = bank_val - fin_sum
     tol = _tolerance(params)
-    if abs(diff) <= Decimal("0.01"):
+    if bank_row is None and fin_rows.empty:
+        klass = "manual-diff-idle"
+    elif abs(diff) <= Decimal("0.01"):
         klass = "manual-diff-ok"
     elif abs(diff) <= tol:
         klass = "manual-diff-warn"
@@ -158,6 +161,10 @@ def _render_selection_bar(bank_row, fin_rows: pd.DataFrame, params: ConciliacaoP
         if len(fin_rows) > 3:
             fin_hint += f" +{len(fin_rows) - 3}"
     is_exact = abs(diff) <= Decimal("0.01")
+    if bank_row is None and fin_rows.empty:
+        diff_hint = "aguardando seleção"
+    else:
+        diff_hint = "fecha exatamente" if is_exact else "fora do fechamento exato"
 
     st.markdown(
         f"""
@@ -176,7 +183,7 @@ def _render_selection_bar(bank_row, fin_rows: pd.DataFrame, params: ConciliacaoP
                 <div>
                     <div class="label">Diferença</div>
                     <div class="amount {klass}">{fmt_valor(diff)}</div>
-                    <div class="hint">{"fecha exatamente" if is_exact else "fora do fechamento exato"}</div>
+                    <div class="hint">{diff_hint}</div>
                 </div>
             </div>
         </div>
@@ -184,6 +191,57 @@ def _render_selection_bar(bank_row, fin_rows: pd.DataFrame, params: ConciliacaoP
         unsafe_allow_html=True,
     )
     return bank_val, fin_sum, diff, is_exact
+
+
+def _render_n_to_1_bar(bnk_rows: pd.DataFrame, fin_rows: pd.DataFrame, params: ConciliacaoParams) -> None:
+    bnk_sum = sum((_to_decimal(v) for v in bnk_rows["_valor"].tolist()), Decimal("0"))
+    single_fin = len(fin_rows) == 1
+    fin_val = _to_decimal(fin_rows.iloc[0]["_valor"]) if single_fin else Decimal("0")
+    diff = bnk_sum - fin_val
+
+    if not single_fin:
+        klass = "manual-diff-idle"
+    elif abs(diff) <= Decimal("0.01"):
+        klass = "manual-diff-ok"
+    elif abs(diff) <= _tolerance(params):
+        klass = "manual-diff-warn"
+    else:
+        klass = "manual-diff-bad"
+
+    if fin_rows.empty:
+        fin_hint = "Nenhum lançamento financeiro selecionado"
+        diff_hint = "aguardando seleção"
+    elif single_fin:
+        fin_hint = escape(str(fin_rows.iloc[0].get("_historico", ""))[:96])
+        diff_hint = "fecha exatamente" if abs(diff) <= Decimal("0.01") else "fora do fechamento exato"
+    else:
+        fin_hint = f"{len(fin_rows)} selecionados - escolha apenas 1"
+        diff_hint = "seleção inválida para N:1"
+
+    st.markdown(
+        f"""
+        <div class="manual-selection">
+            <div class="manual-selection-grid">
+                <div>
+                    <div class="label">Soma bancários ({len(bnk_rows)})</div>
+                    <div class="amount">{fmt_valor(bnk_sum)}</div>
+                    <div class="hint">{len(bnk_rows)} lançamentos bancários selecionados</div>
+                </div>
+                <div>
+                    <div class="label">Financeiro selecionado</div>
+                    <div class="amount">{fmt_valor(fin_val) if single_fin else "—"}</div>
+                    <div class="hint">{fin_hint}</div>
+                </div>
+                <div>
+                    <div class="label">Diferença</div>
+                    <div class="amount {klass}">{fmt_valor(diff) if single_fin else "—"}</div>
+                    <div class="hint">{diff_hint}</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _render_bank_panel(bnk_sem: pd.DataFrame) -> list[str]:
@@ -230,6 +288,50 @@ def _render_bank_panel(bnk_sem: pd.DataFrame) -> list[str]:
     return sel_ids
 
 
+def _fin_candidate_rows(
+    fin_sem: pd.DataFrame,
+    bank_row,
+    sel_bnk_id: Optional[str],
+    params: ConciliacaoParams,
+) -> list[dict]:
+    """
+    Linhas do painel financeiro com afinidade calculada.
+
+    O resultado só depende do banco selecionado e dos dados pendentes, então é
+    memoizado: selecionar linhas no financeiro reexecuta o fragmento sem pagar
+    de novo o custo do scoring (SequenceMatcher em toda a base).
+    """
+    cache_key = (st.session_state.get("manual_selection_nonce", 0), sel_bnk_id, len(fin_sem))
+    cached = st.session_state.get("_mc_fin_rows_cache")
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
+
+    rows = []
+    for _, r in fin_sem.iterrows():
+        if bank_row is not None:
+            score, reasons, diff = _score_fin_candidate(bank_row, r, params)
+            day_delta = _date_delta_days(bank_row.get("_data"), r.get("_data"))
+        else:
+            score, reasons, diff = 0, [], Decimal("0")
+            day_delta = None
+        rows.append({
+            "Afinidade": score,
+            "Valor": fmt_valor(r["_valor"]),
+            "Data": fmt_data(r["_data"]),
+            "Historico": str(r.get("_historico", ""))[:72],
+            "Diferenca": fmt_valor(diff) if bank_row is not None else "",
+            "Sinais": ", ".join(reasons[:3]),
+            "_id": str(r["_id"]),
+            "_score": score,
+            "_day_delta": 9999 if day_delta is None else int(day_delta),
+            "_diff_abs": abs(diff),
+            "_reasons": reasons,
+        })
+
+    st.session_state["_mc_fin_rows_cache"] = (cache_key, rows)
+    return rows
+
+
 def _render_fin_panel(
     fin_sem: pd.DataFrame,
     bank_row,
@@ -252,30 +354,7 @@ def _render_fin_panel(
     )
     termo = st.text_input("Buscar no financeiro", key=f"mc_busca_fin_{key_prefix}", placeholder="Data, valor ou histórico")
 
-    rows = []
-    for _, r in fin_sem.iterrows():
-        rid = str(r["_id"])
-        if bank_row is not None:
-            score, reasons, diff = _score_fin_candidate(bank_row, r, params)
-            day_delta = _date_delta_days(bank_row.get("_data"), r.get("_data"))
-        else:
-            score, reasons, diff = 0, [], Decimal("0")
-            day_delta = None
-        rows.append({
-            "Afinidade": score,
-            "Valor": fmt_valor(r["_valor"]),
-            "Data": fmt_data(r["_data"]),
-            "Historico": str(r.get("_historico", ""))[:72],
-            "Diferenca": fmt_valor(diff) if bank_row is not None else "",
-            "Sinais": ", ".join(reasons[:3]),
-            "_id": rid,
-            "_score": score,
-            "_day_delta": 9999 if day_delta is None else int(day_delta),
-            "_diff_abs": abs(diff),
-            "_reasons": reasons,
-        })
-
-    df_disp = pd.DataFrame(rows)
+    df_disp = pd.DataFrame(_fin_candidate_rows(fin_sem, bank_row, sel_bnk_id, params))
     if termo.strip():
         t = termo.strip().lower()
         mask = (
@@ -435,30 +514,42 @@ def _run_process_5(df_bnk: pd.DataFrame, df_fin: pd.DataFrame, params: Conciliac
     return df_bnk, df_fin
 
 
-def step_manual_conciliator(
-    df_bnk: pd.DataFrame,
-    df_fin: pd.DataFrame,
-    params: ConciliacaoParams,
-) -> tuple:
+def _finish(df_bnk: pd.DataFrame, df_fin: pd.DataFrame) -> None:
+    """Encerra a etapa: grava os dados e devolve o controle ao script principal."""
+    st.session_state["df_bnk"] = df_bnk
+    st.session_state["df_fin"] = df_fin
+    st.session_state["manual_finished"] = True
+    st.rerun(scope="app")
+
+
+@st.fragment
+def _manual_workspace(params: ConciliacaoParams) -> None:
     """
-    Renderiza o conciliador manual.
-    Retorna (df_bnk, df_fin, finished: bool).
+    Área de trabalho do conciliador manual.
+
+    É um fragmento: selecionar linhas nas tabelas reexecuta apenas esta função,
+    não o script inteiro. Os DataFrames trafegam via session_state porque um
+    fragmento não devolve valores ao chamador.
     """
-    _manual_css()
+    df_bnk = st.session_state["df_bnk"]
+    df_fin = st.session_state["df_fin"]
+
     bnk_sem = df_bnk[df_bnk["_status"].astype(str) == STATUS_SEM_PAREAMENTO].copy()
     bnk_sem["_id"] = bnk_sem["_id"].astype(str)
     fin_sem = df_fin[df_fin["_status"].astype(str) == STATUS_IGNORADO_SEM_PAR].copy()
     fin_sem["_id"] = fin_sem["_id"].astype(str)
 
-    st.subheader("Conciliador Manual")
     _render_workbar(bnk_sem, fin_sem)
 
     if bnk_sem.empty:
         st.success("Todos os lançamentos bancários foram conciliados.")
         st.divider()
         if st.button("Finalizar", type="primary", key="mc_fin_empty"):
-            return df_bnk, df_fin, True
-        return df_bnk, df_fin, False
+            _finish(df_bnk, df_fin)
+        return
+
+    # Reservado antes das listas: preenchido depois, quando a seleção é conhecida.
+    summary_slot = st.container()
 
     col_bnk, col_fin = st.columns(2, gap="medium")
     with col_bnk:
@@ -469,8 +560,6 @@ def step_manual_conciliator(
     bank_row = None
     if sel_bnk_id and sel_bnk_id in bnk_sem["_id"].values:
         bank_row = bnk_sem[bnk_sem["_id"] == sel_bnk_id].iloc[0]
-    elif len(selected_bnk_ids) > 1:
-        st.info(f"{len(selected_bnk_ids)} lançamentos bancários selecionados para ação em bloco.")
 
     with col_fin:
         st.markdown("**Financeiro**")
@@ -478,8 +567,14 @@ def step_manual_conciliator(
 
     fin_selected = _selected_rows(fin_sem, selected_fin_ids)
 
+    # O resumo é sempre renderizado, zerado se não houver seleção, para a página não saltar.
+    with summary_slot:
+        if len(selected_bnk_ids) > 1:
+            _render_n_to_1_bar(_selected_rows(bnk_sem, selected_bnk_ids), fin_selected, params)
+        else:
+            bank_val, fin_sum, diff, is_exact = _render_selection_bar(bank_row, fin_selected, params)
+
     if bank_row is not None:
-        bank_val, fin_sum, diff, is_exact = _render_selection_bar(bank_row, fin_selected, params)
         # Parcial válido quando financeiro cobre menos que o banco (mesmo sinal, não exato)
         can_partial = (
             bool(selected_fin_ids)
@@ -496,48 +591,32 @@ def step_manual_conciliator(
                 st.session_state["df_bnk"] = df_bnk
                 st.session_state["df_fin"] = df_fin
                 _clear_selection(sel_bnk_id)
-                st.rerun()
+                st.rerun(scope="fragment")
         with btn_partial:
             if st.button("Conciliar parcial", key="mc_btn_partial", disabled=not can_partial, use_container_width=True):
                 df_bnk, df_fin = _apply_match(df_bnk, df_fin, sel_bnk_id, selected_fin_ids, partial=True)
                 st.session_state["df_bnk"] = df_bnk
                 st.session_state["df_fin"] = df_fin
                 _clear_selection(sel_bnk_id)
-                st.rerun()
+                st.rerun(scope="fragment")
         with btn_ignore_bnk:
             if st.button("Ignorar banco", key="mc_btn_ignore_bnk", use_container_width=True):
                 df_bnk = _ignore_bank(df_bnk, selected_bnk_ids)
                 st.session_state["df_bnk"] = df_bnk
                 _clear_selection(sel_bnk_id)
-                st.rerun()
+                st.rerun(scope="fragment")
         with btn_ignore_fin:
             if st.button("Ignorar financeiro", key="mc_btn_ignore_fin", disabled=not selected_fin_ids, use_container_width=True):
                 df_fin = _ignore_financeiro(df_fin, selected_fin_ids)
                 st.session_state["df_fin"] = df_fin
                 _clear_selection(sel_bnk_id)
-                st.rerun()
+                st.rerun(scope="fragment")
         with btn_clear:
             if st.button("Limpar seleção", key="mc_btn_clear", use_container_width=True):
                 _clear_selection(sel_bnk_id)
-                st.rerun()
+                st.rerun(scope="fragment")
     elif len(selected_bnk_ids) > 1:
-        # N banco → 1 financeiro: exibe resumo e botão de conciliação N:1
-        if selected_fin_ids:
-            fin_n1 = _selected_rows(fin_sem, selected_fin_ids)
-            bnk_n1 = _selected_rows(bnk_sem, selected_bnk_ids)
-            bnk_sum = sum((_to_decimal(v) for v in bnk_n1["_valor"].tolist()), Decimal("0"))
-            fin_val = _to_decimal(fin_n1.iloc[0]["_valor"]) if len(fin_n1) == 1 else Decimal("0")
-            diff_n1 = bnk_sum - fin_val
-            diff_klass = "manual-diff-ok" if abs(diff_n1) <= Decimal("0.01") else "manual-diff-warn" if abs(diff_n1) <= _tolerance(params) else "manual-diff-bad"
-            st.markdown(
-                f"""<div class="manual-selection"><div class="manual-selection-grid">
-                <div><div class="label">Soma bancários ({len(selected_bnk_ids)})</div><div class="amount">{fmt_valor(bnk_sum)}</div></div>
-                <div><div class="label">Financeiro selecionado</div><div class="amount">{fmt_valor(fin_val) if len(fin_n1)==1 else "—"}</div></div>
-                <div><div class="label">Diferença</div><div class="amount {diff_klass}">{fmt_valor(diff_n1) if len(fin_n1)==1 else "—"}</div></div>
-                </div></div>""",
-                unsafe_allow_html=True,
-            )
-
+        # N banco → 1 financeiro: resumo já renderizado acima das listas.
         can_n1 = len(selected_fin_ids) == 1
         n1_col, bulk_col, clear_col = st.columns([1.4, 1.5, 1])
         with n1_col:
@@ -553,17 +632,17 @@ def step_manual_conciliator(
                 st.session_state["df_bnk"] = df_bnk
                 st.session_state["df_fin"] = df_fin
                 _clear_selection(None)
-                st.rerun()
+                st.rerun(scope="fragment")
         with bulk_col:
             if st.button(f"Ignorar {len(selected_bnk_ids)} bancos", key="mc_btn_ignore_bnk_bulk", use_container_width=True):
                 df_bnk = _ignore_bank(df_bnk, selected_bnk_ids)
                 st.session_state["df_bnk"] = df_bnk
                 _clear_selection(None)
-                st.rerun()
+                st.rerun(scope="fragment")
         with clear_col:
             if st.button("Limpar seleção", key="mc_btn_clear_bulk", use_container_width=True):
                 _clear_selection(None)
-                st.rerun()
+                st.rerun(scope="fragment")
     else:
         st.info("Selecione uma linha do banco para ver sugestões, diferença e ações.")
 
@@ -572,7 +651,7 @@ def step_manual_conciliator(
     with nav_b:
         if st.button("Finalizar sem parcial", use_container_width=True, key="mc_nav_skip"):
             _clear_selection(st.session_state.get("manual_sel_bnk"))
-            return df_bnk, df_fin, True
+            _finish(df_bnk, df_fin)
     with nav_c:
         has_pending = (df_bnk["_status"].astype(str) == STATUS_PENDENTE_PARCIAL).any()
         btn_label = "Seguir conciliação" if has_pending else "Finalizar"
@@ -581,6 +660,26 @@ def step_manual_conciliator(
                 with st.spinner("Rodando Processo 5..."):
                     df_bnk, df_fin = _run_process_5(df_bnk, df_fin, params)
             _clear_selection(st.session_state.get("manual_sel_bnk"))
-            return df_bnk, df_fin, True
+            _finish(df_bnk, df_fin)
 
-    return df_bnk, df_fin, False
+
+def step_manual_conciliator(
+    df_bnk: pd.DataFrame,
+    df_fin: pd.DataFrame,
+    params: ConciliacaoParams,
+) -> tuple:
+    """
+    Renderiza o conciliador manual.
+    Retorna (df_bnk, df_fin, finished: bool).
+    """
+    st.session_state["df_bnk"] = df_bnk
+    st.session_state["df_fin"] = df_fin
+
+    if st.session_state.pop("manual_finished", False):
+        return df_bnk, df_fin, True
+
+    _manual_css()
+    st.subheader("Conciliador Manual")
+    _manual_workspace(params)
+
+    return st.session_state["df_bnk"], st.session_state["df_fin"], False
