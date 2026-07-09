@@ -6,18 +6,31 @@ import pickle
 import signal
 import subprocess
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import psutil
 
 from .params import ConciliacaoParams
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 JOBS_DIR = PROJECT_ROOT / "data" / "jobs"
+
+# Teto de conciliações rodando ao mesmo tempo no servidor. Cada job é um
+# subprocesso Python + pandas que pode saturar um núcleo inteiro durante a
+# busca combinatória — sem esse limite, vários usuários iniciando conciliação
+# ao mesmo tempo derrubam o desempenho de tudo mais no servidor.
+# Ajustável via variável de ambiente conforme o hardware real do servidor.
+MAX_CONCURRENT_JOBS = int(os.environ.get("CONCILIADOR_MAX_JOBS", "2") or "2")
+
+# Serializa a promoção de jobs da fila para evitar que duas sessões do
+# Streamlit, fazendo polling ao mesmo tempo, estourem o teto acima.
+_promote_lock = threading.Lock()
 
 
 def _job_dir(job_id: str) -> Path:
@@ -59,6 +72,9 @@ def write_status(job_id: str, status: str, message: str = "", **extra: Any) -> N
 
 
 def read_status(job_id: str) -> dict:
+    # Toda leitura de status (chamada a cada ~1s pelo polling da UI) também
+    # tenta promover jobs da fila — não exige um daemon separado para isso.
+    _promote_queued_jobs()
     path = _status_path(job_id)
     if not path.exists():
         return {"job_id": job_id, "status": "missing", "message": "Job não encontrado."}
@@ -66,6 +82,87 @@ def read_status(job_id: str) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception as exc:
         return {"job_id": job_id, "status": "error", "message": f"Status inválido: {exc}"}
+
+
+def _pid_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        return psutil.pid_exists(int(pid))
+    except Exception:
+        return False
+
+
+def _spawn_worker(job_id: str) -> None:
+    """Inicia o subprocesso do worker com prioridade de CPU reduzida.
+
+    Prioridade abaixo do normal (nice 10 no POSIX, BELOW_NORMAL no Windows)
+    faz o worker ceder CPU para outros processos do servidor quando há
+    contenção, em vez de competir em pé de igualdade com tudo mais na máquina.
+    """
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "core.conciliation_worker", job_id],
+        cwd=str(PROJECT_ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=creationflags,
+    )
+    try:
+        p = psutil.Process(proc.pid)
+        if os.name == "nt":
+            p.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            p.nice(10)
+    except Exception:
+        pass  # prioridade reduzida é um bônus — segue com prioridade padrão se falhar
+    write_status(job_id, "running", "Processo iniciado.", pid=proc.pid)
+
+
+def _promote_queued_jobs() -> None:
+    """Conta jobs realmente ativos e inicia jobs enfileirados até o teto."""
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    with _promote_lock:
+        active = 0
+        queued: list[tuple[float, str]] = []
+        for job_dir in JOBS_DIR.iterdir():
+            if not job_dir.is_dir():
+                continue
+            job_id = job_dir.name
+            status = _raw_status(job_id)
+            state = status.get("status")
+            if state == "running":
+                pid = status.get("pid")
+                if _pid_alive(pid):
+                    active += 1
+                else:
+                    # Worker morreu sem atualizar o status (crash) — libera o slot.
+                    write_status(job_id, "error", "Processo do worker encerrou inesperadamente.")
+            elif state == "queued":
+                queued.append((float(status.get("queued_at", 0) or 0), job_id))
+
+        if active >= MAX_CONCURRENT_JOBS or not queued:
+            return
+
+        queued.sort(key=lambda item: item[0])
+        for _, job_id in queued[: MAX_CONCURRENT_JOBS - active]:
+            _spawn_worker(job_id)
+
+
+def _raw_status(job_id: str) -> dict:
+    """Lê o status sem disparar _promote_queued_jobs (evita recursão)."""
+    path = _status_path(job_id)
+    if not path.exists():
+        return {"job_id": job_id, "status": "missing"}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"job_id": job_id, "status": "error"}
+
+
+def _enqueue(job_id: str) -> None:
+    write_status(job_id, "queued", "Job criado. Aguardando início.", queued_at=time.time())
+    _promote_queued_jobs()
 
 
 def start_conciliation_job(
@@ -80,6 +177,7 @@ def start_conciliation_job(
     with _input_path(job_id).open("wb") as f:
         pickle.dump(
             {
+                "mode": "full",
                 "df_bnk": df_bnk,
                 "df_fin": df_fin,
                 "params": params,
@@ -88,17 +186,37 @@ def start_conciliation_job(
             f,
             protocol=pickle.HIGHEST_PROTOCOL,
         )
+    _enqueue(job_id)
+    return job_id
 
-    write_status(job_id, "queued", "Job criado. Aguardando início.")
-    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "core.conciliation_worker", job_id],
-        cwd=str(PROJECT_ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
-    )
-    write_status(job_id, "running", "Processo iniciado.", pid=proc.pid)
+
+def start_rerun_job(
+    df_bnk: pd.DataFrame,
+    df_fin: pd.DataFrame,
+    params: ConciliacaoParams,
+) -> str:
+    """Reexecuta run_engine em segundo plano (usado após decisões de revisão manual).
+
+    Antes, esse recálculo rodava direto no processo do Streamlit e travava
+    a sessão de todos os usuários simultâneos (Python puro segurando o GIL
+    durante a busca combinatória). Agora passa pelo mesmo isolamento em
+    subprocesso + fila usado na conciliação inicial.
+    """
+    job_id = uuid.uuid4().hex
+    job_path = _job_dir(job_id)
+    job_path.mkdir(parents=True, exist_ok=True)
+    with _input_path(job_id).open("wb") as f:
+        pickle.dump(
+            {
+                "mode": "rerun",
+                "df_bnk": df_bnk,
+                "df_fin": df_fin,
+                "params": params,
+            },
+            f,
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+    _enqueue(job_id)
     return job_id
 
 

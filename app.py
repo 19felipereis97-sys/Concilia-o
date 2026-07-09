@@ -32,7 +32,6 @@ from core.normalize import (
     STATUS_SEM_PAREAMENTO, STATUS_IGNORADO_SEM_PAR,
     STATUS_REVISAR, STATUS_REVISAR_COLISAO,
 )
-from core.engine import run_engine
 from core.manual_review import apply_review_decisions, build_review_queue
 from core.report_builder import build_report
 from core.background_jobs import (
@@ -40,6 +39,7 @@ from core.background_jobs import (
     load_result,
     read_status,
     start_conciliation_job,
+    start_rerun_job,
 )
 from ui.wizard_upload import (
     step_upload_extrato, step_upload_financeiro,
@@ -682,6 +682,100 @@ def _render_conciliation_job():
         st.rerun()
 
 
+def _iniciar_rerun_review_job(df_bnk: pd.DataFrame, df_fin: pd.DataFrame, cards: list, params) -> None:
+    """Aplica decisões da revisão e reexecuta o motor em segundo plano.
+
+    Antes, o run_engine rodava direto no processo do Streamlit e travava a
+    sessão de todos os usuários simultâneos enquanto durava a busca
+    combinatória. Agora roda isolado em subprocesso, como a conciliação inicial.
+    """
+    protected_bnk = {
+        c.id_bnk for c in cards
+        if c.id_bnk and not (c.decisao == "conciliar" and c.selecao_pre)
+    }
+    protected_fin = {
+        c.id_fin for c in cards
+        if c.id_fin and not (c.decisao == "conciliar" and c.selecao_pre)
+    }
+    df_bnk, df_fin = apply_review_decisions(df_bnk, df_fin, cards)
+    df_bnk, df_fin = _release_all_revisar(df_bnk, df_fin)
+    st.session_state.pop("manual_sel_bnk", None)
+
+    if params is None:
+        st.session_state["df_bnk"] = df_bnk
+        st.session_state["df_fin"] = df_fin
+        st.session_state["review_cards"] = []
+        st.rerun()
+        return
+
+    job_id = start_rerun_job(df_bnk, df_fin, params)
+    st.session_state["review_rerun_job_id"] = job_id
+    st.session_state["review_rerun_protected_bnk"] = protected_bnk
+    st.session_state["review_rerun_protected_fin"] = protected_fin
+    st.rerun()
+
+
+def _render_rerun_review_job(params) -> bool:
+    """Mostra o progresso do rerun em segundo plano. Retorna True se há um job
+    em andamento ou recém-concluído (chamador deve parar de renderizar a fila antiga)."""
+    job_id = st.session_state.get("review_rerun_job_id")
+    if not job_id:
+        return False
+
+    status = read_status(job_id)
+    state = status.get("status", "")
+    message = status.get("message", "")
+
+    if state in {"queued", "running"}:
+        st.info(message or "Reexecutando motor de conciliação em segundo plano.")
+        progress_value = int(status.get("progress", 0) or 0)
+        st.progress(min(max(progress_value, 0), 100), text=f"{progress_value}% - {message}")
+        st.caption(f"Job: {job_id}")
+        time.sleep(1)
+        st.rerun()
+        return True
+
+    if state == "done":
+        try:
+            result = load_result(job_id)
+            df_bnk = result["df_bnk"]
+            df_fin = result["df_fin"]
+            protected_bnk = st.session_state.pop("review_rerun_protected_bnk", set())
+            protected_fin = st.session_state.pop("review_rerun_protected_fin", set())
+            df_bnk, df_fin = _restore_review_released(df_bnk, df_fin, protected_bnk, protected_fin)
+            new_cards = build_review_queue(df_bnk, df_fin, params)
+
+            st.session_state["df_bnk"] = df_bnk
+            st.session_state["df_fin"] = df_fin
+            if new_cards:
+                st.session_state["review_cards"] = new_cards
+            else:
+                st.session_state["review_cards"] = []
+                st.session_state["review_phase"] = "D"
+            st.session_state.pop("review_rerun_job_id", None)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Erro ao carregar resultado da reexecução: {e}")
+        return True
+
+    if state == "cancelled":
+        st.warning(message or "Reexecução cancelada.")
+        if st.button("Voltar para a revisão", key="rerun_job_clear_cancelled"):
+            st.session_state.pop("review_rerun_job_id", None)
+            st.session_state.pop("review_rerun_protected_bnk", None)
+            st.session_state.pop("review_rerun_protected_fin", None)
+            st.rerun()
+        return True
+
+    st.error(message or "A reexecução em segundo plano falhou.")
+    if st.button("Voltar para a revisão", key="rerun_job_clear_error"):
+        st.session_state.pop("review_rerun_job_id", None)
+        st.session_state.pop("review_rerun_protected_bnk", None)
+        st.session_state.pop("review_rerun_protected_fin", None)
+        st.rerun()
+    return True
+
+
 def _metrics_bar(df_bnk: pd.DataFrame) -> None:
     if df_bnk.empty or "_status" not in df_bnk.columns:
         return
@@ -835,6 +929,9 @@ def _etapa_revisao_download():
 
     # ── Fase B — Revisão de ambiguidades ──────────────────────────────────────
     if phase == "B":
+        if _render_rerun_review_job(params):
+            return  # reexecução em segundo plano em andamento ou recém-concluída
+
         if cards:
             cards = step_review(cards)
             st.session_state["review_cards"] = cards
@@ -846,35 +943,7 @@ def _etapa_revisao_download():
         with col_adv:
             if st.button("Aplicar decisões e avançar para Conciliação Manual",
                          type="primary", key="btn_advance_manual", use_container_width=True):
-                with st.spinner("Aplicando decisões e re-executando motor..."):
-                    protected_bnk = {
-                        c.id_bnk for c in cards
-                        if c.id_bnk and not (c.decisao == "conciliar" and c.selecao_pre)
-                    }
-                    protected_fin = {
-                        c.id_fin for c in cards
-                        if c.id_fin and not (c.decisao == "conciliar" and c.selecao_pre)
-                    }
-                    df_bnk, df_fin = apply_review_decisions(df_bnk, df_fin, cards)
-                    df_bnk, df_fin = _release_all_revisar(df_bnk, df_fin)
-                    if params is not None:
-                        df_bnk, df_fin = run_engine(df_bnk, df_fin, params, include_partial=False)
-                        df_bnk, df_fin = _restore_review_released(
-                            df_bnk, df_fin, protected_bnk, protected_fin
-                        )
-                    # Se o motor gerou novas ambiguidades, volta para revisão com a nova fila.
-                    # Só avança para conciliação manual quando não restar nenhum REVISAR.
-                    new_cards = build_review_queue(df_bnk, df_fin, params) if params is not None else []
-                    st.session_state["df_bnk"] = df_bnk
-                    st.session_state["df_fin"] = df_fin
-                    st.session_state.pop("manual_sel_bnk", None)
-                    if new_cards:
-                        st.session_state["review_cards"] = new_cards
-                        # review_phase permanece "B" — nova rodada de revisão
-                    else:
-                        st.session_state["review_cards"] = []
-                        st.session_state["review_phase"] = "D"
-                st.rerun()
+                _iniciar_rerun_review_job(df_bnk, df_fin, cards, params)
         with col_skip:
             if st.button("Pular para Download", key="btn_skip_download", use_container_width=True):
                 st.session_state["review_phase"] = "done"

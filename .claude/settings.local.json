@@ -8,7 +8,19 @@
       "Bash(python run_tests.py)",
       "Bash(del \"C:\\\\Users\\\\felipe.r\\\\Desktop\\\\Conciliação\\\\_diagnostico.py\" \"C:\\\\Users\\\\felipe.r\\\\Desktop\\\\Conciliação\\\\_diagnostico2.py\")",
       "Bash(git add *)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(sysctl -n hw.ncpu)",
+      "Bash(./.venv/bin/python -c \"import psutil; print\\(psutil.__version__\\)\")",
+      "Bash(./.venv/bin/pip install *)",
+      "Bash(./.venv/bin/python -c \"import ast; ast.parse\\(open\\('app.py'\\).read\\(\\)\\); ast.parse\\(open\\('core/background_jobs.py'\\).read\\(\\)\\); ast.parse\\(open\\('core/conciliation_worker.py'\\).read\\(\\)\\); print\\('OK sintaxe'\\)\")",
+      "Bash(git stash *)",
+      "Bash(./.venv/bin/python -m py_compile app.py core/background_jobs.py core/conciliation_worker.py)",
+      "Bash(./.venv/bin/python -m pytest tests/ -q)",
+      "Bash(./.venv/bin/python -)",
+      "Bash(ls data/jobs/ 2>/dev/null; rm -rf data/jobs/*; ls data/jobs/ 2>/dev/null; echo \"limpo\")"
+    ],
+    "additionalDirectories": [
+      "/Users/matheuspetrakis/Documents/GitHub/Concilia-o/data/jobs"
     ]
   }
 }

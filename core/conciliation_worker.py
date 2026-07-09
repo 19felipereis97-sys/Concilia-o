@@ -39,10 +39,44 @@ def _compute_balance_warning(df_bnk, df_fin, modalidade_str: str) -> dict:
     return resultado
 
 
+def _run_rerun(job_id: str, payload: dict) -> None:
+    """Modo leve: reexecuta run_engine após decisões de revisão manual.
+
+    Não repete normalização, cálculo de saldo nem o supervisor_agent — essas
+    etapas já rodaram no job "full" original e não mudam neste recálculo.
+    """
+    df_bnk = payload["df_bnk"]
+    df_fin = payload["df_fin"]
+    params = payload["params"]
+
+    write_status(job_id, "running", "Reexecutando motor de conciliacao.", progress=10, stage="motor")
+    df_bnk, df_fin = run_engine(
+        df_bnk,
+        df_fin,
+        params,
+        progress=lambda message, pct: write_status(
+            job_id, "running", message, progress=max(10, min(pct, 85)), stage="motor",
+        ),
+        include_partial=False,
+    )
+
+    write_status(job_id, "running", "Montando fila de revisao.", progress=90, stage="revisao")
+    cards = build_review_queue(df_bnk, df_fin, params)
+
+    with _result_path(job_id).open("wb") as f:
+        pickle.dump({"df_bnk": df_bnk, "df_fin": df_fin, "review_cards": cards}, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    write_status(job_id, "done", "Reexecucao concluida.", progress=100, stage="revisao")
+
+
 def run(job_id: str) -> None:
     write_status(job_id, "running", "Carregando dados do job.", progress=5, stage="normalizacao")
     with _input_path(job_id).open("rb") as f:
         payload = pickle.load(f)
+
+    if payload.get("mode") == "rerun":
+        _run_rerun(job_id, payload)
+        return
 
     df_bnk = payload["df_bnk"]
     df_fin = payload["df_fin"]
