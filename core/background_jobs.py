@@ -49,8 +49,31 @@ def _result_path(job_id: str) -> Path:
     return _job_dir(job_id) / "result.pkl"
 
 
+def _raw_status(job_id: str) -> dict:
+    """Lê o status sem disparar _promote_queued_jobs (evita recursão)."""
+    path = _status_path(job_id)
+    if not path.exists():
+        return {"job_id": job_id, "status": "missing"}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"job_id": job_id, "status": "error"}
+
+
 def write_status(job_id: str, status: str, message: str = "", **extra: Any) -> None:
+    """Atualiza o status.json fazendo merge com o conteúdo anterior.
+
+    Chamadas de progresso (ex.: run_engine reportando cada etapa) não
+    repassam campos como `pid` — sem o merge, cada write_status() apagava o
+    pid gravado por _spawn_worker, e o próximo _promote_queued_jobs()
+    concluía (errado) que o processo tinha morrido, marcando jobs saudáveis
+    como erro assim que o worker reportava o primeiro checkpoint de progresso.
+    """
+    existing = _raw_status(job_id)
+    if existing.get("status") == "missing":
+        existing = {}
     payload = {
+        **existing,
         "job_id": job_id,
         "status": status,
         "message": message,
@@ -93,21 +116,35 @@ def _pid_alive(pid: int) -> bool:
         return False
 
 
+def _stderr_path(job_id: str) -> Path:
+    return _job_dir(job_id) / "stderr.log"
+
+
 def _spawn_worker(job_id: str) -> None:
     """Inicia o subprocesso do worker com prioridade de CPU reduzida.
 
     Prioridade abaixo do normal (nice 10 no POSIX, BELOW_NORMAL no Windows)
     faz o worker ceder CPU para outros processos do servidor quando há
     contenção, em vez de competir em pé de igualdade com tudo mais na máquina.
+
+    stderr vai para um arquivo por job (em vez de DEVNULL) — se o processo
+    morrer por um jeito que o try/except de conciliation_worker.main() não
+    captura (estouro de memória matado pelo SO, crash nativo, erro de
+    importação), sobra o traceback para diagnosticar em vez de só a mensagem
+    genérica de "encerrou inesperadamente".
     """
     creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "core.conciliation_worker", job_id],
-        cwd=str(PROJECT_ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=creationflags,
-    )
+    stderr_file = _stderr_path(job_id).open("wb")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "core.conciliation_worker", job_id],
+            cwd=str(PROJECT_ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=stderr_file,
+            creationflags=creationflags,
+        )
+    finally:
+        stderr_file.close()  # o subprocesso já herdou o descritor; ok fechar no pai
     try:
         p = psutil.Process(proc.pid)
         if os.name == "nt":
@@ -117,6 +154,17 @@ def _spawn_worker(job_id: str) -> None:
     except Exception:
         pass  # prioridade reduzida é um bônus — segue com prioridade padrão se falhar
     write_status(job_id, "running", "Processo iniciado.", pid=proc.pid)
+
+
+def _read_stderr_tail(job_id: str, max_chars: int = 2000) -> str:
+    path = _stderr_path(job_id)
+    if not path.exists():
+        return ""
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        return ""
+    return content[-max_chars:] if content else ""
 
 
 def _promote_queued_jobs() -> None:
@@ -137,7 +185,11 @@ def _promote_queued_jobs() -> None:
                     active += 1
                 else:
                     # Worker morreu sem atualizar o status (crash) — libera o slot.
-                    write_status(job_id, "error", "Processo do worker encerrou inesperadamente.")
+                    detail = _read_stderr_tail(job_id)
+                    message = "Processo do worker encerrou inesperadamente."
+                    if detail:
+                        message += f" Detalhe: {detail}"
+                    write_status(job_id, "error", message)
             elif state == "queued":
                 queued.append((float(status.get("queued_at", 0) or 0), job_id))
 
@@ -147,17 +199,6 @@ def _promote_queued_jobs() -> None:
         queued.sort(key=lambda item: item[0])
         for _, job_id in queued[: MAX_CONCURRENT_JOBS - active]:
             _spawn_worker(job_id)
-
-
-def _raw_status(job_id: str) -> dict:
-    """Lê o status sem disparar _promote_queued_jobs (evita recursão)."""
-    path = _status_path(job_id)
-    if not path.exists():
-        return {"job_id": job_id, "status": "missing"}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {"job_id": job_id, "status": "error"}
 
 
 def _enqueue(job_id: str) -> None:
