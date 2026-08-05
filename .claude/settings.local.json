@@ -24,7 +24,12 @@
       "Bash(rm -rf data/jobs/*)",
       "Bash(git check-ignore *)",
       "Bash(echo \"exit: $?\")",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(./.venv/bin/python -c ' *)",
+      "Bash(python3 -)",
+      "Bash(./.venv/bin/python -m py_compile core/background_jobs.py)",
+      "Bash(./.venv/bin/python -m pyflakes core/background_jobs.py)",
+      "Bash(git show *)"
     ],
     "additionalDirectories": [
       "/Users/matheuspetrakis/Documents/GitHub/Concilia-o/data/jobs"

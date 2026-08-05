@@ -34,7 +34,7 @@ def _manual_css() -> None:
         .manual-kpi,.manual-selection{border:1px solid rgba(120,120,120,.18);background:var(--secondary-background-color);border-radius:8px;padding:12px 14px}
         .manual-kpi .label,.manual-selection .label{color:rgba(120,120,120,.95);font-size:.74rem;text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
         .manual-kpi .value{color:var(--text-color);font-size:1.08rem;font-weight:750;white-space:nowrap}
-        .manual-selection{margin:0 0 14px}
+        .manual-selection{margin:0 0 14px;position:sticky;top:.5rem;z-index:999;box-shadow:0 10px 24px rgba(15,23,42,.10)}
         .manual-selection-grid{display:grid;grid-template-columns:1.2fr 1.2fr 1fr;gap:10px;align-items:stretch}
         .manual-selection .amount{font-size:1.18rem;font-weight:800;color:var(--text-color);line-height:1.5}
         .manual-selection .hint{font-size:.78rem;line-height:1.4;min-height:1.4em;color:rgba(120,120,120,.95);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -74,34 +74,69 @@ def _date_delta_days(a, b) -> Optional[int]:
         return None
 
 
-def _score_fin_candidate(bank_row, fin_row, params: ConciliacaoParams) -> tuple[int, list[str], Decimal]:
-    bank_val = abs(_to_decimal(bank_row.get("_valor")))
-    fin_val = abs(_to_decimal(fin_row.get("_valor")))
-    diff_abs = abs(bank_val - fin_val)
+def _date_sort_key(value) -> pd.Timestamp:
+    parsed = pd.to_datetime(value, dayfirst=True, errors="coerce")
+    if pd.isna(parsed):
+        return pd.Timestamp.max
+    return parsed.normalize()
+
+
+def _score_fin_candidate(
+    bank_row,
+    fin_row,
+    params: ConciliacaoParams,
+    selected_fin_sum: Decimal = Decimal("0"),
+    candidate_selected: bool = False,
+) -> tuple[int, list[str], Decimal]:
+    bank_raw = _to_decimal(bank_row.get("_valor"))
+    fin_raw = _to_decimal(fin_row.get("_valor"))
+    remaining = bank_raw - selected_fin_sum
+    remaining_abs = abs(remaining)
+    fin_val = abs(fin_raw)
+    diff_abs = abs(remaining_abs - fin_val)
     tol = _tolerance(params)
     days = _date_delta_days(bank_row.get("_data"), fin_row.get("_data"))
     hist_score = _text_similarity(bank_row.get("_historico", ""), fin_row.get("_historico", ""))
+    diff_signed = remaining - fin_raw
+
+    if candidate_selected:
+        return 100, ["selecionado"], diff_signed
+
+    if remaining_abs <= Decimal("0.01"):
+        return 0, ["seleção fechada"], diff_signed
+
+    if bank_raw and fin_raw and bank_raw * fin_raw < 0:
+        return 0, ["sinal diferente"], diff_signed
+
+    if fin_val > remaining_abs + tol:
+        return 0, ["acima do restante"], diff_signed
 
     score = 0
     reasons: list[str] = []
     if diff_abs <= Decimal("0.01"):
-        score += 35
-        reasons.append("valor igual")
+        score += 74
+        reasons.append("fecha restante" if selected_fin_sum else "valor igual")
     elif diff_abs <= tol:
-        score += 28
+        score += 68
         reasons.append("tolerância")
-    elif bank_val and diff_abs / bank_val <= Decimal("0.02"):
-        score += 18
-        reasons.append("valor próximo")
+    elif remaining_abs:
+        closeness = Decimal("1") - min(diff_abs / remaining_abs, Decimal("1"))
+        score += int(round(float(closeness * Decimal("62"))))
+        if closeness >= Decimal("0.85"):
+            reasons.append("valor muito próximo")
+        elif closeness >= Decimal("0.55"):
+            reasons.append("valor próximo")
+        elif closeness >= Decimal("0.25"):
+            reasons.append("valor menor")
 
     if days == 0:
-        score += 60
+        score += 20
         reasons.append("mesmo dia")
     elif days is not None and days <= 2:
-        score += 42
+        score += 12
         reasons.append(f"D{days}")
     elif days is not None and days <= 5:
-        score += 25
+        score += 6
         reasons.append(f"D{days}")
 
     if hist_score >= 70:
@@ -111,7 +146,6 @@ def _score_fin_candidate(bank_row, fin_row, params: ConciliacaoParams) -> tuple[
         score += 3
         reasons.append("histórico próximo")
 
-    diff_signed = _to_decimal(bank_row.get("_valor")) - _to_decimal(fin_row.get("_valor"))
     return min(score, 100), reasons, diff_signed
 
 
@@ -293,26 +327,43 @@ def _fin_candidate_rows(
     bank_row,
     sel_bnk_id: Optional[str],
     params: ConciliacaoParams,
+    selected_fin_ids: Optional[list[str]] = None,
 ) -> list[dict]:
     """
     Linhas do painel financeiro com afinidade calculada.
 
-    O resultado só depende do banco selecionado e dos dados pendentes, então é
-    memoizado: selecionar linhas no financeiro reexecuta o fragmento sem pagar
-    de novo o custo do scoring (SequenceMatcher em toda a base).
+    O resultado depende do banco selecionado, dos dados pendentes e da seleção
+    financeira atual, porque a afinidade usa o valor restante.
     """
-    cache_key = (st.session_state.get("manual_selection_nonce", 0), sel_bnk_id, len(fin_sem))
+    selected_fin_ids = selected_fin_ids or []
+    selected_fin_key = tuple(sorted(str(i) for i in selected_fin_ids))
+    cache_key = (st.session_state.get("manual_selection_nonce", 0), sel_bnk_id, len(fin_sem), selected_fin_key)
     cached = st.session_state.get("_mc_fin_rows_cache")
     if cached is not None and cached[0] == cache_key:
         return cached[1]
 
+    selected_fin_sum = sum(
+        (_to_decimal(v) for v in _selected_rows(fin_sem, selected_fin_ids)["_valor"].tolist()),
+        Decimal("0"),
+    )
+    selected_fin_set = {str(i) for i in selected_fin_ids}
+
     rows = []
     for _, r in fin_sem.iterrows():
         if bank_row is not None:
-            score, reasons, diff = _score_fin_candidate(bank_row, r, params)
+            row_id = str(r["_id"])
+            base_score, _, base_diff = _score_fin_candidate(bank_row, r, params)
+            score, reasons, diff = _score_fin_candidate(
+                bank_row,
+                r,
+                params,
+                selected_fin_sum=selected_fin_sum,
+                candidate_selected=row_id in selected_fin_set,
+            )
             day_delta = _date_delta_days(bank_row.get("_data"), r.get("_data"))
         else:
             score, reasons, diff = 0, [], Decimal("0")
+            base_score, base_diff = 0, Decimal("0")
             day_delta = None
         rows.append({
             "Afinidade": score,
@@ -323,8 +374,11 @@ def _fin_candidate_rows(
             "Sinais": ", ".join(reasons[:3]),
             "_id": str(r["_id"]),
             "_score": score,
+            "_sort_score": base_score,
             "_day_delta": 9999 if day_delta is None else int(day_delta),
             "_diff_abs": abs(diff),
+            "_sort_diff_abs": abs(base_diff),
+            "_date_key": _date_sort_key(r["_data"]),
             "_reasons": reasons,
         })
 
@@ -354,7 +408,11 @@ def _render_fin_panel(
     )
     termo = st.text_input("Buscar no financeiro", key=f"mc_busca_fin_{key_prefix}", placeholder="Data, valor ou histórico")
 
-    df_disp = pd.DataFrame(_fin_candidate_rows(fin_sem, bank_row, sel_bnk_id, params))
+    active_fin_ids = []
+    if st.session_state.get("manual_sel_fin_bnk_id") == sel_bnk_id:
+        active_fin_ids = [str(i) for i in st.session_state.get("manual_sel_fin_ids", [])]
+
+    df_disp = pd.DataFrame(_fin_candidate_rows(fin_sem, bank_row, sel_bnk_id, params, active_fin_ids))
     if termo.strip():
         t = termo.strip().lower()
         mask = (
@@ -366,15 +424,22 @@ def _render_fin_panel(
 
     if bank_row is not None:
         if filtro == "Mesmo valor":
-            df_disp = df_disp[df_disp["_reasons"].apply(lambda rs: "valor igual" in rs)].copy()
+            df_disp = df_disp[df_disp["_reasons"].apply(lambda rs: "valor igual" in rs or "fecha restante" in rs)].copy()
         elif filtro == "Mesmo dia":
             df_disp = df_disp[df_disp["_reasons"].apply(lambda rs: "mesmo dia" in rs)].copy()
         elif filtro == "Tolerância":
-            df_disp = df_disp[df_disp["_reasons"].apply(lambda rs: "tolerância" in rs or "valor igual" in rs)].copy()
+            df_disp = df_disp[df_disp["_reasons"].apply(lambda rs: "tolerância" in rs or "valor igual" in rs or "fecha restante" in rs)].copy()
         elif filtro == "Histórico parecido":
             df_disp = df_disp[df_disp["_reasons"].apply(lambda rs: any("histórico" in r for r in rs))].copy()
 
-    df_disp = df_disp.sort_values(["_day_delta", "_diff_abs", "_score", "Data"], ascending=[True, True, False, True]).drop(columns=["_score", "_day_delta", "_diff_abs", "_reasons"])
+    if bank_row is not None:
+        df_disp = df_disp.sort_values(
+            ["_sort_score", "_sort_diff_abs", "_day_delta", "_date_key"],
+            ascending=[False, True, True, True],
+        )
+    else:
+        df_disp = df_disp.sort_values(["_date_key", "Valor"], ascending=[True, True])
+    df_disp = df_disp.drop(columns=["_score", "_sort_score", "_day_delta", "_diff_abs", "_sort_diff_abs", "_date_key", "_reasons"])
     df_disp = df_disp[["Afinidade", "Valor", "Data", "Historico", "Diferenca", "Sinais", "_id"]]
 
     event = st.dataframe(
@@ -397,7 +462,10 @@ def _render_fin_panel(
     )
 
     sel_rows = event.selection.rows
-    return df_disp.iloc[sel_rows]["_id"].tolist() if sel_rows and not df_disp.empty else []
+    sel_ids = df_disp.iloc[sel_rows]["_id"].tolist() if sel_rows and not df_disp.empty else []
+    st.session_state["manual_sel_fin_ids"] = sel_ids
+    st.session_state["manual_sel_fin_bnk_id"] = sel_bnk_id
+    return sel_ids
 
 
 def _apply_match(
@@ -496,6 +564,8 @@ def _ignore_financeiro(df_fin: pd.DataFrame, ids_fin: list[str]) -> pd.DataFrame
 def _clear_selection(sel_bnk_id: Optional[str]) -> None:
     st.session_state.pop("manual_sel_bnk", None)
     st.session_state.pop("manual_sel_bnk_ids", None)
+    st.session_state.pop("manual_sel_fin_ids", None)
+    st.session_state.pop("manual_sel_fin_bnk_id", None)
     st.session_state["manual_selection_nonce"] = st.session_state.get("manual_selection_nonce", 0) + 1
 
 
