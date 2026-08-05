@@ -4,6 +4,7 @@ Tela de trabalho para selecionar lançamentos bancários e financeiros pendentes
 """
 from __future__ import annotations
 
+import bisect
 from html import escape
 from decimal import Decimal
 from difflib import SequenceMatcher
@@ -87,7 +88,15 @@ def _score_fin_candidate(
     params: ConciliacaoParams,
     selected_fin_sum: Decimal = Decimal("0"),
     candidate_selected: bool = False,
+    value_rank: float = 0.0,
 ) -> tuple[int, list[str], Decimal]:
+    """
+    value_rank: fração (0..1) de candidatos elegíveis (mesmo sinal, dentro do
+    restante) com valor absoluto <= o deste candidato. Usada para diferenciar
+    candidatos "pequenos" entre si — sem isso, R$0,60 e R$89,80 ficavam quase
+    empatados sempre que o restante era grande (ex.: R$2.000), porque a
+    proximidade era medida só contra o restante inteiro, não contra os pares.
+    """
     bank_raw = _to_decimal(bank_row.get("_valor"))
     fin_raw = _to_decimal(fin_row.get("_valor"))
     remaining = bank_raw - selected_fin_sum
@@ -95,8 +104,6 @@ def _score_fin_candidate(
     fin_val = abs(fin_raw)
     diff_abs = abs(remaining_abs - fin_val)
     tol = _tolerance(params)
-    days = _date_delta_days(bank_row.get("_data"), fin_row.get("_data"))
-    hist_score = _text_similarity(bank_row.get("_historico", ""), fin_row.get("_historico", ""))
     diff_signed = remaining - fin_raw
 
     if candidate_selected:
@@ -111,6 +118,12 @@ def _score_fin_candidate(
     if fin_val > remaining_abs + tol:
         return 0, ["acima do restante"], diff_signed
 
+    # A partir daqui o candidato é elegível — só agora vale calcular data/histórico.
+    # _text_similarity (SequenceMatcher) é caro; adiar evita gastar em linhas que
+    # já teriam sido descartadas acima (sinal diferente, acima do restante).
+    days = _date_delta_days(bank_row.get("_data"), fin_row.get("_data"))
+    hist_score = _text_similarity(bank_row.get("_historico", ""), fin_row.get("_historico", ""))
+
     score = 0
     reasons: list[str] = []
     if diff_abs <= Decimal("0.01"):
@@ -119,14 +132,21 @@ def _score_fin_candidate(
     elif diff_abs <= tol:
         score += 68
         reasons.append("tolerância")
-    elif remaining_abs:
-        closeness = Decimal("1") - min(diff_abs / remaining_abs, Decimal("1"))
-        score += int(round(float(closeness * Decimal("62"))))
-        if closeness >= Decimal("0.85"):
+    else:
+        # Combina duas leituras de proximidade por valor:
+        #   closes_alone: quanto esse candidato sozinho fecharia do restante —
+        #     forte quando o restante já é pequeno e o candidato quase completa.
+        #   value_rank: posição relativa do valor frente aos demais candidatos
+        #     elegíveis — garante que valores bem diferentes entre si (R$0,60 vs
+        #     R$89,80) não fiquem achatados só porque o restante é grande.
+        closes_alone = Decimal("1") - min(diff_abs / remaining_abs, Decimal("1")) if remaining_abs else Decimal("0")
+        blended = max(closes_alone, Decimal(str(value_rank)))
+        score += int(round(float(blended) * 62))
+        if blended >= Decimal("0.85"):
             reasons.append("valor muito próximo")
-        elif closeness >= Decimal("0.55"):
+        elif blended >= Decimal("0.55"):
             reasons.append("valor próximo")
-        elif closeness >= Decimal("0.25"):
+        elif blended >= Decimal("0.25"):
             reasons.append("valor menor")
 
     if days == 0:
@@ -322,6 +342,40 @@ def _render_bank_panel(bnk_sem: pd.DataFrame) -> list[str]:
     return sel_ids
 
 
+def _eligible_value_ranks(
+    fin_sem: pd.DataFrame,
+    bank_row,
+    remaining_abs: Decimal,
+    tol: Decimal,
+    selected_fin_set: set[str],
+) -> list[float]:
+    """
+    Valores absolutos (ordenados) de candidatos elegíveis para o restante dado:
+    mesmo sinal do banco, não selecionados, e dentro do restante + tolerância.
+    Usado para calcular o rank relativo de cada candidato via bisect.
+    """
+    bank_raw = _to_decimal(bank_row.get("_valor"))
+    vals: list[float] = []
+    for _, r in fin_sem.iterrows():
+        if str(r["_id"]) in selected_fin_set:
+            continue
+        fin_raw = _to_decimal(r["_valor"])
+        if bank_raw and fin_raw and bank_raw * fin_raw < 0:
+            continue
+        fin_val = abs(fin_raw)
+        if fin_val > remaining_abs + tol:
+            continue
+        vals.append(float(fin_val))
+    vals.sort()
+    return vals
+
+
+def _value_rank(fin_val: Decimal, sorted_eligible_vals: list[float]) -> float:
+    if not sorted_eligible_vals:
+        return 0.0
+    return bisect.bisect_right(sorted_eligible_vals, float(fin_val)) / len(sorted_eligible_vals)
+
+
 def _fin_candidate_rows(
     fin_sem: pd.DataFrame,
     bank_row,
@@ -348,17 +402,36 @@ def _fin_candidate_rows(
     )
     selected_fin_set = {str(i) for i in selected_fin_ids}
 
+    # base_* ignora a seleção atual (selected_fin_sum=0) — usado só para manter a
+    # ORDEM da tabela estável enquanto o usuário soma itens; live_* usa o restante
+    # de verdade e é o que aparece na coluna Afinidade.
+    base_sorted_vals: list[float] = []
+    live_sorted_vals: list[float] = []
+    if bank_row is not None:
+        tol = _tolerance(params)
+        bank_abs = abs(_to_decimal(bank_row.get("_valor")))
+        live_remaining_abs = abs(_to_decimal(bank_row.get("_valor")) - selected_fin_sum)
+        base_sorted_vals = _eligible_value_ranks(fin_sem, bank_row, bank_abs, tol, selected_fin_set)
+        live_sorted_vals = (
+            base_sorted_vals if selected_fin_sum == 0
+            else _eligible_value_ranks(fin_sem, bank_row, live_remaining_abs, tol, selected_fin_set)
+        )
+
     rows = []
     for _, r in fin_sem.iterrows():
         if bank_row is not None:
             row_id = str(r["_id"])
-            base_score, _, base_diff = _score_fin_candidate(bank_row, r, params)
+            fin_abs = abs(_to_decimal(r["_valor"]))
+            base_score, _, base_diff = _score_fin_candidate(
+                bank_row, r, params, value_rank=_value_rank(fin_abs, base_sorted_vals),
+            )
             score, reasons, diff = _score_fin_candidate(
                 bank_row,
                 r,
                 params,
                 selected_fin_sum=selected_fin_sum,
                 candidate_selected=row_id in selected_fin_set,
+                value_rank=_value_rank(fin_abs, live_sorted_vals),
             )
             day_delta = _date_delta_days(bank_row.get("_data"), r.get("_data"))
         else:
@@ -463,8 +536,15 @@ def _render_fin_panel(
 
     sel_rows = event.selection.rows
     sel_ids = df_disp.iloc[sel_rows]["_id"].tolist() if sel_rows and not df_disp.empty else []
+    changed = set(sel_ids) != set(active_fin_ids)
     st.session_state["manual_sel_fin_ids"] = sel_ids
     st.session_state["manual_sel_fin_bnk_id"] = sel_bnk_id
+    if changed:
+        # A tabela acima foi desenhada com a afinidade calculada a partir da seleção
+        # ANTERIOR — o Streamlit só revela a seleção nova depois que o widget já
+        # renderizou. Sem forçar este rerun, a afinidade dos demais candidatos ficava
+        # sempre um clique atrasada em relação à soma que o usuário acabou de fazer.
+        st.rerun(scope="fragment")
     return sel_ids
 
 
