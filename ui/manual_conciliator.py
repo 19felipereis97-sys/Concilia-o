@@ -583,12 +583,14 @@ def _apply_match(
         pending.update({
             "_id": f"PND_{id_bnk}",
             "_data": df_bnk.at[bi, "_data"],
-            "_valor": float(diff),
+            "_valor": diff,
             "_historico": df_bnk.at[bi, "_historico"],
             "_status": STATUS_PENDENTE_PARCIAL,
             "_metodo": f"pendente:{id_bnk}",
             "_ids_fin": "",
         })
+        if "_valor_f" in df_bnk.columns:
+            pending["_valor_f"] = float(diff)
         df_bnk = pd.concat([df_bnk, pd.DataFrame([pending])[df_bnk.columns]], ignore_index=True)
 
     return df_bnk, df_fin
