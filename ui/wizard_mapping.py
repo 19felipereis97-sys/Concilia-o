@@ -15,7 +15,7 @@ from core.params import ConciliacaoParams
 from core.wizard_persistence import (
     save_wizard_config,
     get_extrato_snapshot, get_fin_snapshot,
-    apply_wizard_config_data, apply_fin_config_data,
+    apply_extrato_template_data, apply_fin_template_data,
 )
 from plan.client_store import (
     log_acao, upsert_conciliacao_template,
@@ -99,16 +99,6 @@ def _clear_fin_mapping_state() -> None:
     ])
 
 
-def _extrato_template_config(config: dict) -> dict:
-    allowed = {
-        "extrato_sheet", "extrato_skip", "extrato_suffix",
-        "bnk_col_data", "bnk_col_hist", "bnk_valor_mod",
-        "bnk_col_valor", "bnk_col_deb", "bnk_col_cre",
-        "extrato_mapping",
-    }
-    return {k: v for k, v in (config or {}).items() if k in allowed}
-
-
 def _render_extrato_layout_selector(cliente_id: int) -> bool:
     templates = list_banco_templates(cliente_id)
     st.markdown("**Layout do banco**")
@@ -138,12 +128,10 @@ def _render_extrato_layout_selector(cliente_id: int) -> bool:
             if st.button("Aplicar", key="bnk_layout_apply", use_container_width=True):
                 tpl = get_conciliacao_template(template_id)
                 if tpl and tpl.get("config"):
-                    cfg = _extrato_template_config(tpl["config"])
-                    apply_wizard_config_data(st.session_state, cfg, overwrite=True)
+                    _clear_extrato_mapping_state()
+                    apply_extrato_template_data(st.session_state, tpl["config"], overwrite=True)
                     st.session_state["bnk_layout_nome_ativo"] = tpl.get("banco_nome", "")
                     st.session_state["bnk_layout_ref_ativo"] = f"saved:{template_id}"
-                    st.session_state.pop("df_bnk", None)
-                    st.session_state.pop("_norm_bnk_fp", None)
                     log_acao(
                         st.session_state.get("usuario_email", "desconhecido"),
                         "TEMPLATE_BANCO_APLICADO",
@@ -220,12 +208,10 @@ def _render_fin_layout_selector(cliente_id: int) -> bool:
             if st.button("Aplicar", key="fin_layout_apply", use_container_width=True):
                 tpl = get_conciliacao_template(template_id)
                 if tpl and tpl.get("config"):
-                    cfg = {k: v for k, v in tpl["config"].items() if k != "fin_modalidade_str"}
-                    apply_fin_config_data(st.session_state, cfg, overwrite=True)
+                    _clear_fin_mapping_state()
+                    apply_fin_template_data(st.session_state, tpl["config"], overwrite=True)
                     st.session_state["fin_layout_nome_ativo"] = tpl.get("nome", "")
                     st.session_state["fin_layout_ref_ativo"] = f"saved:{template_id}"
-                    st.session_state.pop("df_fin", None)
-                    st.session_state.pop("_norm_fin_fp", None)
                     log_acao(
                         st.session_state.get("usuario_email", "desconhecido"),
                         "TEMPLATE_FIN_APLICADO",

@@ -465,8 +465,17 @@ def _render_fin_panel(
     sel_bnk_id: Optional[str],
     params: ConciliacaoParams,
 ) -> list[str]:
-    key_prefix = sel_bnk_id or "nosel"
     nonce = st.session_state.get("manual_selection_nonce", 0)
+    if st.session_state.get("manual_sel_fin_bnk_id") != sel_bnk_id:
+        # Lançamento bancário mudou: zera a seleção financeira e força uma
+        # chave de widget nova. Trocar só o conteúdo da tabela (mantendo a
+        # mesma chave) não é suficiente — o Streamlit não desmarca sozinho.
+        st.session_state["manual_fin_epoch"] = st.session_state.get("manual_fin_epoch", 0) + 1
+        st.session_state["manual_sel_fin_ids"] = []
+        st.session_state["manual_sel_fin_bnk_id"] = sel_bnk_id
+    epoch = st.session_state.get("manual_fin_epoch", 0)
+    key_prefix = f"{sel_bnk_id or 'nosel'}_{epoch}"
+
     if fin_sem.empty:
         st.info("Nenhum lançamento financeiro livre disponível.")
         return []
@@ -481,9 +490,7 @@ def _render_fin_panel(
     )
     termo = st.text_input("Buscar no financeiro", key=f"mc_busca_fin_{key_prefix}", placeholder="Data, valor ou histórico")
 
-    active_fin_ids = []
-    if st.session_state.get("manual_sel_fin_bnk_id") == sel_bnk_id:
-        active_fin_ids = [str(i) for i in st.session_state.get("manual_sel_fin_ids", [])]
+    active_fin_ids = [str(i) for i in st.session_state.get("manual_sel_fin_ids", [])]
 
     df_disp = pd.DataFrame(_fin_candidate_rows(fin_sem, bank_row, sel_bnk_id, params, active_fin_ids))
     if termo.strip():
@@ -536,15 +543,13 @@ def _render_fin_panel(
 
     sel_rows = event.selection.rows
     sel_ids = df_disp.iloc[sel_rows]["_id"].tolist() if sel_rows and not df_disp.empty else []
-    changed = set(sel_ids) != set(active_fin_ids)
     st.session_state["manual_sel_fin_ids"] = sel_ids
     st.session_state["manual_sel_fin_bnk_id"] = sel_bnk_id
-    if changed:
-        # A tabela acima foi desenhada com a afinidade calculada a partir da seleção
-        # ANTERIOR — o Streamlit só revela a seleção nova depois que o widget já
-        # renderizou. Sem forçar este rerun, a afinidade dos demais candidatos ficava
-        # sempre um clique atrasada em relação à soma que o usuário acabou de fazer.
-        st.rerun(scope="fragment")
+    # Sem rerun forçado aqui: a soma/diferença (calculada pelo chamador a partir
+    # do retorno) já fica correta neste mesmo clique. O único efeito colateral é
+    # a coluna "Afinidade" das demais linhas atualizar com um clique de atraso —
+    # forçar o rerun para corrigir isso fazia o Streamlit descartar a seleção que
+    # acabara de ser marcada (a tabela mudava de conteúdo com a mesma chave).
     return sel_ids
 
 

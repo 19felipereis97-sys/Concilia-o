@@ -134,50 +134,101 @@ def get_wizard_config_snapshot(session_state: Any) -> dict[str, Any]:
 
 
 def get_extrato_snapshot(session_state: Any) -> dict[str, Any]:
-    """Snapshot apenas do extrato bancário + parâmetros (para template de banco)."""
+    """Snapshot apenas do mapeamento de colunas do extrato.
+
+    Aba, linhas ignoradas e formato do arquivo pertencem à configuração do
+    arquivo atual (Etapa 3), não ao layout reutilizável da Etapa 5.
+    """
     data: dict[str, Any] = {}
-    for key in _EXTRATO_CONFIG_KEYS + _EXTRATO_WIDGET_KEYS + _PARAM_WIDGET_KEYS + ["default_year"]:
+    for key in _EXTRATO_WIDGET_KEYS:
         val = session_state.get(key)
         if val is not None:
             data[key] = val
-    for key, cls in _EXTRATO_MAPPING_KEYS.items():
-        obj = session_state.get(key)
-        if obj is not None and dataclasses.is_dataclass(obj):
-            data[key] = dataclasses.asdict(obj)
-    # Garante widget keys mesmo se não estavam explicitamente no session_state
-    m = data.get("extrato_mapping")
-    if isinstance(m, dict):
-        for k, v in _extrato_mapping_to_widgets(m).items():
+    # Garante widget keys mesmo se só o objeto de mapping estiver disponível.
+    mapping = session_state.get("extrato_mapping")
+    if mapping is not None and dataclasses.is_dataclass(mapping):
+        for k, v in _extrato_mapping_to_widgets(dataclasses.asdict(mapping)).items():
             if k not in data:
                 data[k] = v
     return data
 
 
 def get_fin_snapshot(session_state: Any) -> dict[str, Any]:
-    """Snapshot apenas do financeiro (para template financeiro por empresa)."""
+    """Snapshot apenas do mapeamento de colunas do financeiro.
+
+    As abas, linhas ignoradas, sufixos e modalidade continuam sendo definidos
+    pelo arquivo atual nas etapas anteriores.
+    """
     data: dict[str, Any] = {}
-    for key in _FIN_CONFIG_KEYS + _FIN_WIDGET_KEYS:
+    for key in _FIN_WIDGET_KEYS:
         val = session_state.get(key)
         if val is not None:
             data[key] = val
-    for key, cls in _FIN_MAPPING_KEYS.items():
-        obj = session_state.get(key)
-        if obj is not None and dataclasses.is_dataclass(obj):
-            data[key] = dataclasses.asdict(obj)
-    # Garante widget keys derivando dos objetos de mapping
-    modalidade_str = data.get("fin_modalidade_str", "COMPLETO")
-    fin_m = data.get("fin_mapping")
-    if isinstance(fin_m, dict):
+    # Garante widget keys derivando dos objetos de mapping.
+    modalidade_str = session_state.get("fin_modalidade_str", "COMPLETO")
+    fin_mapping = session_state.get("fin_mapping")
+    if fin_mapping is not None and dataclasses.is_dataclass(fin_mapping):
         prefix = "rec_" if modalidade_str == "SEPARADOS" else "fin_"
-        for k, v in _fin_mapping_to_widgets(fin_m, prefix).items():
+        for k, v in _fin_mapping_to_widgets(dataclasses.asdict(fin_mapping), prefix).items():
             if k not in data:
                 data[k] = v
-    fin2_m = data.get("fin2_mapping")
-    if isinstance(fin2_m, dict):
-        for k, v in _fin_mapping_to_widgets(fin2_m, "pag_").items():
+    fin2_mapping = session_state.get("fin2_mapping")
+    if fin2_mapping is not None and dataclasses.is_dataclass(fin2_mapping):
+        for k, v in _fin_mapping_to_widgets(dataclasses.asdict(fin2_mapping), "pag_").items():
             if k not in data:
                 data[k] = v
     return data
+
+
+def apply_extrato_template_data(
+    session_state: Any,
+    data: dict,
+    *,
+    overwrite: bool = True,
+) -> None:
+    """Aplica somente o mapeamento da Etapa 5 de um template de extrato.
+
+    Também aceita templates antigos que continham ``extrato_mapping``, mas
+    ignora deliberadamente sheet, skip, sufixo e parâmetros da conciliação.
+    """
+    if not data:
+        return
+    widgets: dict[str, Any] = {}
+    mapping = data.get("extrato_mapping")
+    if isinstance(mapping, dict):
+        widgets.update(_extrato_mapping_to_widgets(mapping))
+    widgets.update({key: data[key] for key in _EXTRATO_WIDGET_KEYS if key in data})
+    for key, value in widgets.items():
+        if overwrite or key not in session_state:
+            session_state[key] = value
+
+
+def apply_fin_template_data(
+    session_state: Any,
+    data: dict,
+    *,
+    overwrite: bool = True,
+) -> None:
+    """Aplica somente os mapeamentos da Etapa 6 de um template financeiro.
+
+    Templates antigos são convertidos a partir dos objetos de mapping, sem
+    alterar modalidade, abas, linhas ignoradas ou sufixos do arquivo atual.
+    """
+    if not data:
+        return
+    widgets: dict[str, Any] = {}
+    source_mode = data.get("fin_modalidade_str", "COMPLETO")
+    fin_mapping = data.get("fin_mapping")
+    if isinstance(fin_mapping, dict):
+        prefix = "rec_" if source_mode == "SEPARADOS" else "fin_"
+        widgets.update(_fin_mapping_to_widgets(fin_mapping, prefix))
+    fin2_mapping = data.get("fin2_mapping")
+    if isinstance(fin2_mapping, dict):
+        widgets.update(_fin_mapping_to_widgets(fin2_mapping, "pag_"))
+    widgets.update({key: data[key] for key in _FIN_WIDGET_KEYS if key in data})
+    for key, value in widgets.items():
+        if overwrite or key not in session_state:
+            session_state[key] = value
 
 
 # ── Aplicação de snapshots ─────────────────────────────────────────────────────
